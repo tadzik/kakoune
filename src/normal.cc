@@ -1684,9 +1684,36 @@ void force_redraw(Context& context, NormalParams)
         context.client().redraw_ifn();
     }
 }
-
-static NormalCmdDesc cmds[] =
+constexpr bool operator<(const NormalCmdDesc& lhs, const NormalCmdDesc& rhs)
 {
+    return lhs.key < rhs.key;
+}
+
+constexpr void swap(NormalCmdDesc& lhs, NormalCmdDesc& rhs)
+{
+    NormalCmdDesc save = lhs;
+    lhs = rhs;
+    rhs = save;
+}
+
+template<typename T, size_t N>
+constexpr Array<T, N> sort(Array<T, N> a)
+{
+    for (int j = 0; j < N-1; ++j)
+    {
+        int min = j;
+        for (int i = j+1; i < N; ++i)
+        {
+            if (a[i] < a[min])
+                min = i;
+        }
+        if (min != j)
+            swap(a[j], a[min]);
+    }
+    return a;
+}
+
+static constexpr auto cmds = sort(Array<NormalCmdDesc, 143>{{
     { 'h', "move left", move<CharCount, Backward> },
     { 'j', "move down", move<LineCount, Forward> },
     { 'k', "move up",  move<LineCount, Backward> },
@@ -1865,9 +1892,9 @@ static NormalCmdDesc cmds[] =
     { 'Z', "save selections to register", save_selections<false> },
     { alt('Z'), "append selections to register", save_selections<true> },
 
-    { ctrl('l'), "force redraw", force_redraw },
-};
+    { ctrl('l'), "force redraw", force_redraw }
+}});
 
-KeyMap keymap = cmds;
+KeyMap keymap{cmds.begin(), cmds.end()};
 
 }
