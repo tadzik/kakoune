@@ -18,6 +18,9 @@
 #include <termios.h>
 #include <unistd.h>
 
+// FIXME: remove
+#include "buffer_utils.hh"
+
 constexpr char control(char c) { return c & 037; }
 
 namespace Kakoune
@@ -359,7 +362,7 @@ void NCursesUI::draw(const DisplayBuffer& display_buffer,
 
     check_resize();
 
-    LineCount line_index = m_status_on_top ? 1 : 0;
+    LineCount line_index = m_status_on_top ? (m_buflist_show ? 2 : 1) : 0;
     for (const DisplayLine& line : display_buffer.lines())
     {
         wmove(m_window, (int)line_index, 0);
@@ -381,11 +384,97 @@ void NCursesUI::draw(const DisplayBuffer& display_buffer,
     m_dirty = true;
 }
 
+static DisplayLine::const_reverse_iterator find_current_buffer_r(const DisplayLine& buflist,
+                                                                 const Face& default_face)
+{
+    for (auto it = buflist.rbegin(); it != buflist.rend(); it++)
+        if (it->face != default_face)
+            return it;
+
+    return buflist.rend();
+}
+
+static DisplayLine::const_iterator find_current_buffer(const DisplayLine& buflist,
+                                                       const Face& default_face)
+{
+    for (auto it = buflist.begin(); it != buflist.end(); it++)
+        if (it->face != default_face)
+            return it;
+
+    return buflist.end();
+}
+
+void NCursesUI::draw_buflist(const DisplayLine& buflist_particles,
+                             const Face& default_face)
+{
+    const int buflist_pos = m_status_on_top ? 1 : (int)m_dimensions.line;
+    const DisplayAtom atom_separator = DisplayAtom(m_buflist_separator, default_face);
+    DisplayLine buflist;
+
+    if (!m_buflist_show)
+        return;
+
+    {
+        DisplayLine::const_reverse_iterator it_current_buffer_r;
+        it_current_buffer_r = find_current_buffer_r(buflist_particles, default_face);
+        kak_assert(it_current_buffer_r != buflist_particles.rend());
+
+        const int head_point = (int)m_dimensions.column - (int)it_current_buffer_r->length();
+
+        buflist.push_back(*it_current_buffer_r);
+        for (auto it = it_current_buffer_r + 1; it != buflist_particles.rend(); it++)
+        {
+            const ColumnCount length_buflist_proj = buflist.length() + it->length()
+                + m_buflist_separator.column_count_to(m_buflist_separator.length());
+
+            if (length_buflist_proj > head_point)
+            {
+                if (length_buflist_proj - head_point >= 1)
+                    buflist.insert(buflist.begin(), DisplayAtom("…", default_face));
+                break;
+            }
+            buflist.insert(buflist.begin(), atom_separator);
+            buflist.insert(buflist.begin(), *it);
+        }
+    }
+
+    {
+        DisplayLine::const_iterator it_current_buffer;
+        it_current_buffer = find_current_buffer(buflist_particles, default_face);
+        kak_assert(it_current_buffer != buflist_particles.end());
+
+        for (auto it = it_current_buffer + 1; it != buflist_particles.end(); it++)
+        {
+            const ColumnCount length_buflist_proj = buflist.length() + it->length()
+                + m_buflist_separator.column_count_to(m_buflist_separator.length());
+
+            if (length_buflist_proj > m_dimensions.column)
+            {
+                if (length_buflist_proj - m_dimensions.column >= 1)
+                    buflist.push_back(DisplayAtom("…", default_face));
+                break;
+            }
+            buflist.push_back(atom_separator);
+            buflist.push_back(*it);
+        }
+    }
+
+    wmove(m_window, buflist_pos, 0);
+    wbkgdset(m_window, COLOR_PAIR(get_color_pair(default_face)));
+    wclrtoeol(m_window);
+
+    wmove(m_window, buflist_pos, 0);
+
+    draw_line(m_window, buflist, 0, m_dimensions.column, default_face);
+
+    m_dirty = true;
+}
+
 void NCursesUI::draw_status(const DisplayLine& status_line,
                             const DisplayLine& mode_line,
                             const Face& default_face)
 {
-    const int status_line_pos = m_status_on_top ? 0 : (int)m_dimensions.line;
+    const int status_line_pos = m_status_on_top ? 0 : (int)m_dimensions.line + 1;
     wmove(m_window, status_line_pos, 0);
 
     wbkgdset(m_window, COLOR_PAIR(get_color_pair(default_face)));
@@ -460,7 +549,7 @@ void NCursesUI::check_resize(bool force)
         intrflush(m_window, false);
         keypad(m_window, true);
 
-        m_dimensions = DisplayCoord{ws.ws_row-1, ws.ws_col};
+        m_dimensions = DisplayCoord{ws.ws_row-2, ws.ws_col};
 
         if (char* csr = tigetstr((char*)"csr"))
             putp(tparm(csr, 0, ws.ws_row));
@@ -528,7 +617,9 @@ Optional<Key> NCursesUI::get_next_key()
             };
 
             return Key{ get_modifiers(ev.bstate),
-                        encode_coord({ ev.y - (m_status_on_top ? 1 : 0), ev.x }) };
+                        encode_coord({ ev.y - (m_status_on_top ? (m_buflist_show ? 2 : 1)
+                                                               : (m_buflist_show ? 1 : 0)),
+                                       ev.x }) };
         }
     }
 
@@ -1007,6 +1098,17 @@ void NCursesUI::set_ui_options(const Options& options)
         auto it = options.find("ncurses_status_on_top");
         m_status_on_top = it != options.end() and
             (it->value == "yes" or it->value == "true");
+    }
+
+    {
+        auto it = options.find("ncurses_buflist_show");
+        m_buflist_show = it != options.end() and
+            (it->value == "yes" or it->value == "true");
+    }
+
+    {
+        auto it = options.find("ncurses_buflist_separator");
+        m_buflist_separator = it != options.end() ? it->value : " ";
     }
 
     {

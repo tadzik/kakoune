@@ -41,6 +41,8 @@ face StatusLineMode yellow,default
 face StatusLineInfo blue,default
 face StatusLineValue green,default
 face StatusCursor black,cyan
+face BufList StatusLine
+face BufListCurrent cyan,default+r
 face Prompt yellow,default
 face MatchingChar default,default+b
 face BufferPadding blue,default

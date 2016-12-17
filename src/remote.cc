@@ -34,6 +34,7 @@ enum class MessageType : char
     InfoHide,
     Draw,
     DrawStatus,
+    DrawBufList,
     Refresh,
     SetOptions,
     Key
@@ -318,6 +319,9 @@ public:
                      const DisplayLine& mode_line,
                      const Face& default_face) override;
 
+    void draw_buflist(const DisplayLine& buflist,
+                      const Face& default_face) override;
+
     void refresh(bool force) override;
 
     DisplayCoord dimensions() override { return m_dimensions; }
@@ -466,6 +470,15 @@ void RemoteUI::draw_status(const DisplayLine& status_line,
     m_socket_watcher.events() |= FdEvents::Write;
 }
 
+void RemoteUI::draw_buflist(const DisplayLine& buflist,
+                            const Face& default_face)
+{
+    MsgWriter msg{m_send_buffer, MessageType::DrawBufList};
+    msg.write(buflist);
+    msg.write(default_face);
+    m_socket_watcher.events() |= FdEvents::Write;
+}
+
 void RemoteUI::refresh(bool force)
 {
     MsgWriter msg{m_send_buffer, MessageType::Refresh};
@@ -599,6 +612,13 @@ RemoteClient::RemoteClient(StringView session, std::unique_ptr<UserInterface>&& 
                 auto mode_line = reader.read<DisplayLine>();
                 auto default_face = reader.read<Face>();
                 m_ui->draw_status(status_line, mode_line, default_face);
+                break;
+            }
+            case MessageType::DrawBufList:
+            {
+                auto buflist = reader.read<DisplayLine>();
+                auto default_face = reader.read<Face>();
+                m_ui->draw_buflist(buflist, default_face);
                 break;
             }
             case MessageType::Refresh:

@@ -117,6 +117,8 @@ FaceRegistry::FaceRegistry()
         { "StatusLineInfo", Face{ Color::Blue, Color::Default } },
         { "StatusLineValue", Face{ Color::Green, Color::Default } },
         { "StatusCursor", Face{ Color::Black, Color::Cyan } },
+        { "BufList", Face{ Color::Cyan, Color::Default } },
+        { "BufListCurrent", Face{ Color::Cyan, Color::Default, Attribute::Reverse } },
         { "Prompt", Face{ Color::Yellow, Color::Default } },
         { "MatchingChar", Face{ Color::Default, Color::Default, Attribute::Bold } },
         { "BufferPadding", Face{ Color::Blue, Color::Default } },

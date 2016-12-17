@@ -102,6 +102,8 @@ class DisplayLine : public UseMemoryDomain<MemoryDomain::Display>
 public:
     using iterator = AtomList::iterator;
     using const_iterator = AtomList::const_iterator;
+    using reverse_iterator = AtomList::reverse_iterator;
+    using const_reverse_iterator = AtomList::const_reverse_iterator;
     using value_type = AtomList::value_type;
 
     DisplayLine() = default;
@@ -114,6 +116,12 @@ public:
 
     const_iterator begin() const { return m_atoms.begin(); }
     const_iterator end() const { return m_atoms.end(); }
+
+    reverse_iterator rbegin() { return m_atoms.rbegin(); }
+    reverse_iterator rend() { return m_atoms.rend(); }
+
+    const_reverse_iterator rbegin() const { return m_atoms.rbegin(); }
+    const_reverse_iterator rend() const { return m_atoms.rend(); }
 
     const AtomList& atoms() const { return m_atoms; }
 

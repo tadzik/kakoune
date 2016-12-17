@@ -103,7 +103,6 @@ void Client::print_status(DisplayLine status_line, bool immediate)
     }
 }
 
-
 DisplayCoord Client::dimensions() const
 {
     return m_ui->dimensions();
@@ -143,6 +142,26 @@ DisplayLine Client::generate_mode_line() const
     modeline.push_back({ format(" - {}@[{}]", context().name(), Server::instance().session()) });
 
     return modeline;
+}
+
+DisplayLine Client::generate_buflist() const
+{
+    DisplayLine buflist;
+    Face buflist_face = get_face("BufList");
+    Face buflist_current_face = get_face("BufListCurrent");
+
+    auto* current_buffer = &m_window->buffer();
+    const String current_buffer_name = current_buffer->name();
+    for (auto it = BufferManager::instance().begin(); it != BufferManager::instance().end(); it++)
+    {
+        const bool is_current_buffer = current_buffer_name == (*it)->name();
+        const DisplayAtom atom_buffer = DisplayAtom((*it)->display_name(),
+                                              is_current_buffer ? buflist_current_face : buflist_face);
+
+        buflist.push_back(atom_buffer);
+    }
+
+    return buflist;
 }
 
 void Client::change_buffer(Buffer& buffer)
@@ -193,6 +212,15 @@ void Client::redraw_ifn()
         m_mode_line = std::move(mode_line);
     }
 
+    // FIXME: when the separator is changed in the UI options, the buflist needs to be redrawn;
+    // falling through when the set_ui_options has set the Draw flag might not be the best thing to do
+    DisplayLine buflist = generate_buflist();
+    if (buflist.atoms() != m_buflist.atoms() || (m_ui_pending & Draw))
+    {
+        m_ui_pending |= BufList;
+        m_buflist = std::move(buflist);
+    }
+
     if (m_ui_pending == 0)
         return;
 
@@ -234,6 +262,9 @@ void Client::redraw_ifn()
 
     if (m_ui_pending & StatusLine)
         m_ui->draw_status(m_status_line, m_mode_line, get_face("StatusLine"));
+
+    if (m_ui_pending & BufList)
+        m_ui->draw_buflist(m_buflist, get_face("BufList"));
 
     m_ui->refresh(m_ui_pending | Refresh);
     m_ui_pending = 0;

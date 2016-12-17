@@ -30,6 +30,9 @@ public:
                      const DisplayLine& mode_line,
                      const Face& default_face) override;
 
+    void draw_buflist(const DisplayLine& buflist,
+                      const Face& default_face) override;
+
     void menu_show(ConstArrayView<DisplayLine> items,
                    DisplayCoord anchor, Face fg, Face bg,
                    MenuStyle style) override;
@@ -121,6 +124,9 @@ private:
     OnKeyCallback m_on_key;
 
     bool m_status_on_top = false;
+    bool m_buflist_show = false;
+    String m_buflist_separator = " ";
+
     ConstArrayView<StringView> m_assistant;
 
     void enable_mouse(bool enabled);

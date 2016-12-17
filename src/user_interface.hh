@@ -59,6 +59,9 @@ public:
                              const DisplayLine& mode_line,
                              const Face& default_face) = 0;
 
+    virtual void draw_buflist(const DisplayLine& buflist,
+                              const Face& default_face) = 0;
+
     virtual DisplayCoord dimensions() = 0;
 
     virtual void refresh(bool force) = 0;
