@@ -2,4 +2,5 @@
 { "jsonrpc": "2.0", "method": "menu_hide", "params": [] }
 { "jsonrpc": "2.0", "method": "info_hide", "params": [] }
 { "jsonrpc": "2.0", "method": "draw_status", "params": [[], [{ "face": { "fg": "default", "bg": "default", "attributes": [] }, "contents": "out 1:1 " }, { "face": { "fg": "default", "bg": "default", "attributes": [] }, "contents": " " }, { "face": { "fg": "blue", "bg": "default", "attributes": [] }, "contents": "1 sel" }, { "face": { "fg": "default", "bg": "default", "attributes": [] }, "contents": " - unnamed0@[kak-tests]" }], { "fg": "cyan", "bg": "default", "attributes": [] }] }
+{ "jsonrpc": "2.0", "method": "draw_buflist", "params": [[{ "face": { "fg": "cyan", "bg": "default", "attributes": ["reverse"] }, "contents": "out" }, { "face": { "fg": "cyan", "bg": "default", "attributes": [] }, "contents": "*debug*" }], { "fg": "cyan", "bg": "default", "attributes": [] }] }
 { "jsonrpc": "2.0", "method": "refresh", "params": [true] }
