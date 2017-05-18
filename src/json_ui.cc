@@ -73,7 +73,7 @@ String to_json(Color color)
 
 String to_json(Attribute attributes)
 {
-    struct { Attribute attr; StringView name; }
+    struct Attr { Attribute attr; StringView name; }
     attrs[] { 
         { Attribute::Exclusive, "exclusive" },
         { Attribute::Underline, "underline" },
@@ -84,17 +84,10 @@ String to_json(Attribute attributes)
         { Attribute::Italic, "italic" },
     };
 
-    String res;
-    for (auto& attr : attrs)
-    {
-        if (not (attributes & attr.attr))
-            continue;
-
-        if (not res.empty())
-            res += ", ";
-        res += to_json(attr.name);
-    }
-    return "[" + res + "]";
+    return "[" + join(attrs |
+                      filter([=](const Attr& a) { return attributes & a.attr; }) |
+                      transform([](const Attr& a) { return to_json(a.name); }),
+                      ',', false) + "]";
 }
 
 String to_json(Face face)
@@ -137,6 +130,17 @@ String to_json(InfoStyle style)
         case InfoStyle::InlineAbove: return R"("inlineAbove")";
         case InfoStyle::InlineBelow: return R"("inlineBelow")";
         case InfoStyle::MenuDoc: return R"("menuDoc")";
+        case InfoStyle::Modal: return R"("modal")";
+    }
+    return "";
+}
+
+String to_json(CursorMode mode)
+{
+    switch (mode)
+    {
+        case CursorMode::Prompt: return R"("prompt")";
+        case CursorMode::Buffer: return R"("buffer")";
     }
     return "";
 }
@@ -221,6 +225,11 @@ void JsonUI::info_hide()
     rpc_call("info_hide");
 }
 
+void JsonUI::set_cursor(CursorMode mode, DisplayCoord coord)
+{
+    rpc_call("set_cursor", mode, coord);
+}
+
 void JsonUI::refresh(bool force)
 {
     rpc_call("refresh", force);
@@ -242,7 +251,7 @@ void JsonUI::set_on_key(OnKeyCallback callback)
 }
 
 using JsonArray = Vector<Value>;
-using JsonObject = IdMap<Value>;
+using JsonObject = HashMap<String, Value>;
 
 static bool is_digit(char c) { return c >= '0' and c <= '9'; }
 
@@ -336,7 +345,7 @@ parse_json(const char* pos, const char* end)
             std::tie(element, pos) = parse_json(pos, end);
             if (not element)
                 return {};
-            object.append({ std::move(name), std::move(element) });
+            object.insert({ std::move(name), std::move(element) });
             if (not skip_while(pos, end, is_blank))
                 return {};
 
@@ -360,16 +369,16 @@ void JsonUI::eval_json(const Value& json)
         throw runtime_error("json request is not an object");
 
     const JsonObject& object = json.as<JsonObject>();
-    auto json_it = object.find("jsonrpc");
+    auto json_it = object.find("jsonrpc"_sv);
     if (json_it == object.end() or json_it->value.as<String>() != "2.0")
         throw runtime_error("invalid json rpc request");
 
-    auto method_it = object.find("method");
+    auto method_it = object.find("method"_sv);
     if (method_it == object.end())
         throw runtime_error("invalid json rpc request (method missing)");
     StringView method = method_it->value.as<String>();
 
-    auto params_it = object.find("params");
+    auto params_it = object.find("params"_sv);
     if (params_it == object.end())
         throw runtime_error("invalid json rpc request (params missing)");
     const JsonArray& params = params_it->value.as<JsonArray>();

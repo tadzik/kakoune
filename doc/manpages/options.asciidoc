@@ -20,13 +20,16 @@ Types
 	is not a valid regex
 *int-list*, *str-list*::
 	a list, elements are separated by a colon (:) if an element needs
-	to contain a colon, it can be escaped
-	with a backslash
+	to contain a colon, it can be escaped with a backslash
 *range-faces*::
-	a `:` separated list of a pairs of a buffer range
+	a `:` separated list of a pair of a buffer range
 	(`<begin line>.<begin column>,<end line>.<end column>` or
-	`<begin line>.<begin column>+<length>`) and  a face (separated by `|`),
+	`<begin line>.<begin column>+<length>`) and a face (separated by `|`),
 	except for the first element which is just the timestamp of the buffer.
+*line-flags*::
+	a `:` separated list of a line number and a corresponding flag
+	(`<line>|<flag text>`), except for the first element which is just the
+	timestamp of the buffer.
 *completions*::
 	a `:` separated list of `<text>|<docstring>|<menu text>`
 	candidates, except for the first element which follows the
@@ -60,7 +63,7 @@ Builtin options
 	ignored
 
 *BOM* 'enum(none|utf8)'::
-	define if the file should be written with an unicode byte order mark;
+	define if the file should be written with a unicode byte order mark;
 	values of this option assigned to the `window` scope are ignored
 
 *readonly* 'bool'::
@@ -82,12 +85,12 @@ Builtin options
 	automatically display possible completions when editing a prompt
 
 *ignored_files* 'regex'::
-	filenames matching this regex wont be considered as candidates on
+	filenames matching this regex won't be considered as candidates on
 	filename completion (except if the text being completed already
 	matches it)
 
 *disabled_hooks* 'regex'::
-	hooks whose group matches this regex wont be executed. For example
+	hooks whose group matches this regex won't be executed. For example
 	indentation hooks can be disabled with '.*-indent'
 
 *filetype* 'str'::
@@ -137,7 +140,19 @@ Builtin options
 *modelinefmt* 'string'::
 	A format string used to generate the mode line, that string is first
 	expanded as a command line would be (expanding '%...{...}' strings),
-	then markup tags are applied (c.f. the 'Expansions' documentation page)
+	then markup tags are applied (c.f. the 'Expansions' documentation page.)
+	Two special atoms are available as markup:
+
+		*`{{mode_info}}`*:::
+			Information about the current mode, such as `insert 3 sel` or
+			`prompt`. The faces used are StatusLineMode, StatusLineInfo,
+			and StatusLineValue.
+
+		*`{{context_info}}`*:::
+			Information such as `[+][recording (@)][no-hooks][new file][fifo]`,
+			in face Information.
+
+	The default value is '%val{bufname} %val{cursor_line}:%val{cursor_char_column} {{context_info}} {{mode_info}} - %val{client}@[%val{session}]'
 
 *ui_options*::
 	colon separated list of key=value pairs that are forwarded to the user
@@ -153,20 +168,14 @@ Builtin options
 
 		*ncurses_assistant*:::
 			specify the nice assistant you get in info boxes,
-			can be *clippy* (the default), *cat* or *none*
+			can be *clippy* (the default), *cat*, *dilbert* or *none*
 
 		*ncurses_enable_mouse*:::
 			boolean option that enables mouse support
 
+		*ncurses_change_colors*:::
+			boolean option that can disable color palette changing if the
+			terminfo enables it but the terminal does not support it.
+
 		*ncurses_wheel_down_button*, *ncurses_wheel_up_button*:::
 			specify which button send for wheel down/up events
-
-		*ncurses_buffer_padding_str*:::
-			string that will be used to mark the end of the buffer
-
-		*ncurses_buffer_padding_type*:::
-			if set to `fill`, the padding string will fill the entire space
-			between the end of the buffer and the bottom of the current
-			window, if set to `single` the padding string will be inserted
-			once at the end of the buffer. A value of `off` disables any
-			kind of padding

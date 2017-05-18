@@ -10,37 +10,6 @@
 namespace Kakoune
 {
 
-String option_to_string(BufferRange range)
-{
-    return format("{}.{},{}.{}",
-                  range.begin.line+1, range.begin.column+1,
-                  range.end.line, range.end.column);
-}
-
-void option_from_string(StringView str, BufferRange& opt)
-{
-    auto sep = find_if(str, [](char c){ return c == ',' or c == '+'; });
-    auto dot_beg = find(StringView{str.begin(), sep}, '.');
-    auto dot_end = find(StringView{sep, str.end()}, '.');
-
-    if (sep == str.end() or dot_beg == sep or
-        (*sep == ',' and dot_end == str.end()))
-        throw runtime_error(format("'{}' does not follow <line>.<column>,<line>.<column> or <line>.<column>+<len> format", str));
-
-    const BufferCoord beg{str_to_int({str.begin(), dot_beg}) - 1,
-                          str_to_int({dot_beg+1, sep}) - 1};
-
-    const bool len = (*sep == '+');
-    const BufferCoord end{len ? beg.line : str_to_int({sep+1, dot_end}) - 1,
-                          len ? beg.column + str_to_int({sep+1, str.end()})
-                              : str_to_int({dot_end+1, str.end()}) };
-
-    if (beg.line < 0 or beg.column < 0 or end.line < 0 or end.column < 0)
-        throw runtime_error("coordinates elements should be >= 1");
-
-    opt = { beg, end };
-}
-
 StringView DisplayAtom::content() const
 {
     switch (m_type)
@@ -164,7 +133,7 @@ void DisplayLine::push_back(DisplayAtom atom)
 
 DisplayLine::iterator DisplayLine::erase(iterator beg, iterator end)
 {
-    iterator res = m_atoms.erase(beg, end);
+    auto res = m_atoms.erase(beg, end);
     compute_range();
     return res;
 }
@@ -286,7 +255,7 @@ void DisplayBuffer::optimize()
         line.optimize();
 }
 
-DisplayLine parse_display_line(StringView line)
+DisplayLine parse_display_line(StringView line, const HashMap<String, DisplayLine>& builtins)
 {
     DisplayLine res;
     bool was_antislash = false;
@@ -312,7 +281,18 @@ DisplayLine parse_display_line(StringView line)
                 auto closing = std::find(it+1, end, '}');
                 if (closing == end)
                     throw runtime_error("unclosed face definition");
-                face = get_face({it+1, closing});
+                if (*(it+1) == '{' and closing+1 != end and *(closing+1) == '}')
+                {
+                    auto builtin_it = builtins.find(StringView{it+2, closing});
+                    if (builtin_it == builtins.end())
+                        throw runtime_error(format("undefined atom {}", StringView{it+2, closing}));
+                    for (auto& atom : builtin_it->value)
+                        res.push_back(atom);
+                    // closing is now at the first char of "}}", advance it to the second
+                    ++closing;
+                }
+                else
+                    face = get_face({it+1, closing});
                 it = closing;
                 pos = closing + 1;
             }

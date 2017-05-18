@@ -2,11 +2,14 @@
 
 #include "assert.hh"
 #include "buffer_manager.hh"
+#include "buffer_utils.hh"
 #include "client.hh"
 #include "containers.hh"
 #include "context.hh"
 #include "diff.hh"
 #include "file.hh"
+#include "flags.hh"
+#include "option_types.hh"
 #include "shared_string.hh"
 #include "unit_tests.hh"
 #include "utils.hh"
@@ -46,7 +49,7 @@ static ParsedLines parse_lines(StringView data)
     while (pos < data.end())
     {
         const char* eol = std::find(pos, data.end(), '\n');
-        res.lines.emplace_back(StringData::create({pos, eol - (crlf and eol != data.end() ? 1 : 0)}, '\n'));
+        res.lines.emplace_back(StringData::create({{pos, eol - (crlf and eol != data.end() ? 1 : 0)}, "\n"}));
         pos = eol + 1;
     }
 
@@ -76,7 +79,7 @@ Buffer::Buffer(String name, Flags flags, StringView data,
     ParsedLines parsed_lines = parse_lines(data);
 
     if (parsed_lines.lines.empty())
-        parsed_lines.lines.emplace_back(StringData::create("\n"));
+        parsed_lines.lines.emplace_back(StringData::create({"\n"}));
 
     #ifdef KAK_DEBUG
     for (auto& line : parsed_lines.lines)
@@ -107,11 +110,11 @@ void Buffer::on_registered()
     if (m_flags & Flags::File)
     {
         if (m_flags & Buffer::Flags::New)
-            run_hook_in_own_context("BufNew", m_name);
+            run_hook_in_own_context("BufNewFile", m_name);
         else
         {
             kak_assert(m_fs_timestamp != InvalidTime);
-            run_hook_in_own_context("BufOpen", m_name);
+            run_hook_in_own_context("BufOpenFile", m_name);
         }
     }
 
@@ -174,21 +177,21 @@ BufferCoord Buffer::clamp(BufferCoord coord) const
     return coord;
 }
 
-BufferCoord Buffer::offset_coord(BufferCoord coord, CharCount offset)
+BufferCoord Buffer::offset_coord(BufferCoord coord, CharCount offset, ColumnCount)
 {
     StringView line = m_lines[coord.line];
     auto target = utf8::advance(&line[coord.column], offset < 0 ? line.begin() : line.end()-1, offset);
     return {coord.line, (int)(target - line.begin())};
 }
 
-BufferCoordAndTarget Buffer::offset_coord(BufferCoordAndTarget coord, LineCount offset)
+BufferCoordAndTarget Buffer::offset_coord(BufferCoordAndTarget coord, LineCount offset, ColumnCount tabstop)
 {
-    auto column = coord.target == -1 ? m_lines[coord.line].column_count_to(coord.column) : coord.target;
+    auto column = coord.target == -1 ? get_column(*this, tabstop, coord) : coord.target;
     auto line = Kakoune::clamp(coord.line + offset, 0_line, line_count()-1);
     StringView content = m_lines[line];
 
-    column = std::max(0_col, std::min(column, content.column_length() - 2));
-    return {line, content.byte_count_to(column), column};
+    auto final_column = std::max(0_col, std::min(column, content.column_length() - 2));
+    return {line, get_byte_to_column(*this, tabstop, {line, final_column}), column};
 }
 
 String Buffer::string(BufferCoord begin, BufferCoord end) const
@@ -212,7 +215,7 @@ struct Buffer::Modification
 {
     enum Type { Insert, Erase };
 
-    Type      type;
+    Type type;
     BufferCoord coord;
     StringDataPtr content;
 
@@ -230,7 +233,7 @@ void Buffer::reload(StringView data, timespec fs_timestamp)
     ParsedLines parsed_lines = parse_lines(data);
 
     if (parsed_lines.lines.empty())
-        parsed_lines.lines.emplace_back(StringData::create("\n"));
+        parsed_lines.lines.emplace_back(StringData::create({"\n"}));
 
     const bool record_undo = not (m_flags & Flags::NoUndo);
 
@@ -249,7 +252,7 @@ void Buffer::reload(StringView data, timespec fs_timestamp)
         auto diff = find_diff(m_lines.begin(), m_lines.size(),
                               parsed_lines.lines.begin(), (int)parsed_lines.lines.size(),
                               [](const StringDataPtr& lhs, const StringDataPtr& rhs)
-                              { return lhs->hash == rhs->hash and lhs->strview() == rhs->strview(); });
+                              { return lhs->strview() == rhs->strview(); });
 
         auto it = m_lines.begin();
         for (auto& d : diff)
@@ -316,7 +319,7 @@ bool Buffer::undo(size_t count) noexcept
     if (not m_history_cursor->parent)
         return false;
 
-    while (count-- and m_history_cursor->parent)
+    while (count-- != 0 and m_history_cursor->parent)
     {
         for (const Modification& modification : m_history_cursor->undo_group | reverse())
             apply_modification(modification.inverse());
@@ -334,7 +337,7 @@ bool Buffer::redo(size_t count) noexcept
 
     kak_assert(m_current_undo_group.empty());
 
-    while (count-- and m_history_cursor->redo_child)
+    while (count-- != 0 and m_history_cursor->redo_child)
     {
         m_history_cursor = m_history_cursor->redo_child.get();
 
@@ -470,13 +473,13 @@ BufferCoord Buffer::do_insert(BufferCoord pos, StringView content)
         }
     }
     if (start == 0)
-        new_lines.push_back(StringData::create(prefix + content + suffix));
+        new_lines.push_back(StringData::create({prefix, content, suffix}));
     else if (start != content.length() or not suffix.empty())
-        new_lines.push_back(StringData::create(content.substr(start) + suffix));
+        new_lines.push_back(StringData::create({content.substr(start), suffix}));
 
     auto line_it = m_lines.begin() + (int)pos.line;
     auto new_lines_it = new_lines.begin();
-    if (not append_lines)
+    if (not append_lines) // replace first line with new first line
         *line_it++ = std::move(*new_lines_it++);
 
     m_lines.insert(line_it,
@@ -484,7 +487,8 @@ BufferCoord Buffer::do_insert(BufferCoord pos, StringView content)
                    std::make_move_iterator(new_lines.end()));
 
     const LineCount last_line = pos.line + new_lines.size() - 1;
-    const BufferCoord end = BufferCoord{ last_line, m_lines[last_line].length() - suffix.length() };
+    const auto end = at_end ? line_count()
+                            : BufferCoord{ last_line, m_lines[last_line].length() - suffix.length() };
 
     m_changes.push_back({ Change::Insert, at_end, pos, end });
     return pos;
@@ -492,17 +496,20 @@ BufferCoord Buffer::do_insert(BufferCoord pos, StringView content)
 
 BufferCoord Buffer::do_erase(BufferCoord begin, BufferCoord end)
 {
+    if (begin == end)
+        return begin;
+
     kak_assert(is_valid(begin));
     kak_assert(is_valid(end));
     StringView prefix = m_lines[begin.line].substr(0, begin.column);
     StringView suffix = m_lines[end.line].substr(end.column);
-    String new_line = prefix + suffix;
 
     BufferCoord next;
-    if (new_line.length() != 0)
+    if (not prefix.empty() or not suffix.empty())
     {
+        auto new_line = StringData::create({prefix, suffix});
         m_lines.erase(m_lines.begin() + (int)begin.line, m_lines.begin() + (int)end.line);
-        m_lines.get_storage(begin.line) = StringData::create(new_line);
+        m_lines.get_storage(begin.line) = std::move(new_line);
         next = begin;
     }
     else
@@ -669,7 +676,7 @@ BufferCoord Buffer::char_prev(BufferCoord coord) const
 {
     kak_assert(is_valid(coord));
     if (is_end(coord))
-        return coord = {(int)m_lines.size()-1, m_lines.back().length() - 1};
+        return {(int)m_lines.size()-1, m_lines.back().length() - 1};
     else if (coord.column == 0)
     {
         if (coord.line > 0)

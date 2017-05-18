@@ -2,7 +2,7 @@
 #define file_hh_INCLUDED
 
 #include "array_view.hh"
-#include "flags.hh"
+#include "meta.hh"
 #include "units.hh"
 #include "vector.hh"
 
@@ -23,6 +23,8 @@ using CandidateList = Vector<String, MemoryDomain::Completion>;
 String parse_filename(StringView filename);
 String real_path(StringView filename);
 String compact_path(StringView filename);
+
+StringView tmpdir();
 
 // returns pair { directory, filename }
 std::pair<StringView, StringView> split_path(StringView path);
@@ -47,7 +49,7 @@ struct MappedFile
     struct stat st {};
 };
 
-void write_buffer_to_file(Buffer& buffer, StringView filename);
+void write_buffer_to_file(Buffer& buffer, StringView filename, bool force = false);
 void write_buffer_to_fd(Buffer& buffer, int fd);
 void write_buffer_to_backup_file(Buffer& buffer);
 
@@ -76,8 +78,7 @@ enum class FilenameFlags
     OnlyDirectories = 1 << 0,
     Expand = 1 << 1
 };
-
-template<> struct WithBitOps<FilenameFlags> : std::true_type {};
+constexpr bool with_bit_ops(Meta::Type<FilenameFlags>) { return true; }
 
 CandidateList complete_filename(StringView prefix, const Regex& ignore_regex,
                                 ByteCount cursor_pos = -1,

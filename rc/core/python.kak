@@ -11,16 +11,16 @@ hook global BufCreate .*[.](py) %{
 # Highlighters & Completion
 # ‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾
 
-addhl -group / regions -default code python \
+add-highlighter -group / regions -default code python \
     double_string '"""' '"""'            '' \
     single_string "'''" "'''"            '' \
     double_string '"'   (?<!\\)(\\\\)*"  '' \
     single_string "'"   (?<!\\)(\\\\)*'  '' \
     comment       '#'   '$'              ''
 
-addhl -group /python/double_string fill string
-addhl -group /python/single_string fill string
-addhl -group /python/comment       fill comment
+add-highlighter -group /python/double_string fill string
+add-highlighter -group /python/single_string fill string
+add-highlighter -group /python/comment       fill comment
 
 %sh{
     # Grammar
@@ -47,30 +47,30 @@ addhl -group /python/comment       fill comment
 
     # Highlight keywords
     printf %s "
-        addhl -group /python/code regex '\b(${values})\b' 0:value
-        addhl -group /python/code regex '\b(${meta})\b' 0:meta
-        addhl -group /python/code regex '\b(${keywords})\b' 0:keyword
-        addhl -group /python/code regex '\b(${functions})\b\(' 1:builtin
+        add-highlighter -group /python/code regex '\b(${values})\b' 0:value
+        add-highlighter -group /python/code regex '\b(${meta})\b' 0:meta
+        add-highlighter -group /python/code regex '\b(${keywords})\b' 0:keyword
+        add-highlighter -group /python/code regex '\b(${functions})\b\(' 1:builtin
     "
 
     # Highlight types and attributes
     printf %s "
-        addhl -group /python/code regex '\b(${types})\b' 0:type
-        addhl -group /python/code regex '@[\w_]+\b' 0:attribute
+        add-highlighter -group /python/code regex '\b(${types})\b' 0:type
+        add-highlighter -group /python/code regex '@[\w_]+\b' 0:attribute
     "
 }
 
 # Commands
 # ‾‾‾‾‾‾‾‾
 
-def -hidden _python_indent_on_new_line %{
+def -hidden python-indent-on-new-line %{
     eval -draft -itersel %{
+        # copy '#' comment prefix and following white spaces
+        try %{ exec -draft k <a-x> s ^\h*#\h* <ret> y jgh P }
         # preserve previous line indent
-        try %{ exec -draft <space> K <a-&> }
+        try %{ exec -draft \; K <a-&> }
         # cleanup trailing whitespaces from previous line
         try %{ exec -draft k <a-x> s \h+$ <ret> d }
-        # copy '#' comment prefix and following white spaces
-        try %{ exec -draft k x s ^\h*#\h* <ret> y jgh P }
         # indent after line ending with :
         try %{ exec -draft <space> k x <a-k> :$ <ret> j <a-gt> }
     }
@@ -79,16 +79,16 @@ def -hidden _python_indent_on_new_line %{
 # Initialization
 # ‾‾‾‾‾‾‾‾‾‾‾‾‾‾
 
-hook -group python-highlight global WinSetOption filetype=python %{ addhl ref python }
+hook -group python-highlight global WinSetOption filetype=python %{ add-highlighter ref python }
 
 hook global WinSetOption filetype=python %{
-    hook window InsertChar \n -group python-indent _python_indent_on_new_line
+    hook window InsertChar \n -group python-indent python-indent-on-new-line
     # cleanup trailing whitespaces on current line insert end
     hook window InsertEnd .* -group python-indent %{ try %{ exec -draft \; <a-x> s ^\h+$ <ret> d } }
 }
 
-hook -group python-highlight global WinSetOption filetype=(?!python).* %{ rmhl python }
+hook -group python-highlight global WinSetOption filetype=(?!python).* %{ remove-highlighter python }
 
 hook global WinSetOption filetype=(?!python).* %{
-    rmhooks window python-indent
+    remove-hooks window python-indent
 }

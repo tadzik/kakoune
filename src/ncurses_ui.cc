@@ -13,7 +13,7 @@
 #include <ncurses.h>
 
 #include <fcntl.h>
-#include <signal.h>
+#include <csignal>
 #include <sys/ioctl.h>
 #include <termios.h>
 #include <unistd.h>
@@ -53,6 +53,18 @@ static constexpr StringView assistant_clippy[] =
       " │╰─╯│  ",
       " ╰───╯  ",
       "        " };
+
+static constexpr StringView assistant_dilbert[] =
+    { R"(  დოოოოოდ   )",
+      R"(  |     |   )",
+      R"(  |     |  ╭)",
+      R"(  |-ᱛ ᱛ-|  │)",
+      R"( Ͼ   ∪   Ͽ │)",
+      R"(  |     |  ╯)",
+      R"( ˏ`-.ŏ.-´ˎ  )",
+      R"(     @      )",
+      R"(      @     )",
+      R"(            )"};
 
 static void set_attribute(WINDOW* window, int attribute, bool on)
 {
@@ -135,8 +147,8 @@ int NCursesUI::get_color(Color color)
 {
     auto it = m_colors.find(color);
     if (it != m_colors.end())
-        return it->second;
-    else if (can_change_color() and COLORS > 16)
+        return it->value;
+    else if (m_change_colors and can_change_color() and COLORS > 16)
     {
         kak_assert(color.color == Color::RGB);
         if (m_next_color > COLORS)
@@ -171,26 +183,22 @@ int NCursesUI::get_color(Color color)
 
 int NCursesUI::get_color_pair(const Face& face)
 {
-    static int next_pair = 1;
-
     ColorPair colors{face.fg, face.bg};
     auto it = m_colorpairs.find(colors);
     if (it != m_colorpairs.end())
-        return it->second;
+        return it->value;
     else
     {
-        init_pair(next_pair, get_color(face.fg), get_color(face.bg));
-        m_colorpairs[colors] = next_pair;
-        return next_pair++;
+        init_pair(m_next_pair, get_color(face.fg), get_color(face.bg));
+        m_colorpairs[colors] = m_next_pair;
+        return m_next_pair++;
     }
 }
 
 void NCursesUI::set_face(NCursesWin* window, Face face, const Face& default_face)
 {
-    static int current_pair = -1;
-
-    if (current_pair != -1)
-        wattroff(window, COLOR_PAIR(current_pair));
+    if (m_active_pair != -1)
+        wattroff(window, COLOR_PAIR(m_active_pair));
 
     if (face.fg == Color::Default)
         face.fg = default_face.fg;
@@ -199,8 +207,8 @@ void NCursesUI::set_face(NCursesWin* window, Face face, const Face& default_face
 
     if (face.fg != Color::Default or face.bg != Color::Default)
     {
-        current_pair = get_color_pair(face);
-        wattron(window, COLOR_PAIR(current_pair));
+        m_active_pair = get_color_pair(face);
+        wattron(window, COLOR_PAIR(m_active_pair));
     }
 
     set_attribute(window, A_UNDERLINE, face.attributes & Attribute::Underline);
@@ -221,6 +229,19 @@ void on_term_resize(int)
     EventManager::instance().force_signal(0);
 }
 
+static const std::initializer_list<HashMap<Kakoune::Color, int>::Item>
+default_colors = {
+    { Color::Default, -1 },
+    { Color::Black,   COLOR_BLACK },
+    { Color::Red,     COLOR_RED },
+    { Color::Green,   COLOR_GREEN },
+    { Color::Yellow,  COLOR_YELLOW },
+    { Color::Blue,    COLOR_BLUE },
+    { Color::Magenta, COLOR_MAGENTA },
+    { Color::Cyan,    COLOR_CYAN },
+    { Color::White,   COLOR_WHITE },
+};
+
 NCursesUI::NCursesUI()
     : m_stdin_watcher{0, FdEvents::Read,
                       [this](FDWatcher&, FdEvents, EventMode mode) {
@@ -231,17 +252,8 @@ NCursesUI::NCursesUI()
             m_on_key(*key);
       }},
       m_assistant(assistant_clippy),
-      m_colors{
-        { Color::Default, -1 },
-        { Color::Black,   COLOR_BLACK },
-        { Color::Red,     COLOR_RED },
-        { Color::Green,   COLOR_GREEN },
-        { Color::Yellow,  COLOR_YELLOW },
-        { Color::Blue,    COLOR_BLUE },
-        { Color::Magenta, COLOR_MAGENTA },
-        { Color::Cyan,    COLOR_CYAN },
-        { Color::White,   COLOR_WHITE },
-      }
+      m_colors{default_colors},
+      m_cursor{CursorMode::Buffer, {}}
 {
     initscr();
     raw();
@@ -304,9 +316,23 @@ void NCursesUI::redraw()
 {
     pnoutrefresh(m_window, 0, 0, 0, 0,
                  (int)m_dimensions.line + 1, (int)m_dimensions.column);
+
     m_menu.refresh();
     m_info.refresh();
+
+    if (m_cursor.mode == CursorMode::Prompt)
+        wmove(newscr, m_status_on_top ? 0 : (int)m_dimensions.line + 1,
+              (int)m_cursor.coord.column);
+    else
+        wmove(newscr, (int)m_cursor.coord.line + (m_status_on_top ? 1 : 0),
+              (int)m_cursor.coord.column);
+
     doupdate();
+}
+
+void NCursesUI::set_cursor(CursorMode mode, DisplayCoord coord)
+{
+    m_cursor = Cursor{ mode, coord };
 }
 
 void NCursesUI::refresh(bool force)
@@ -589,9 +615,6 @@ Optional<Key> NCursesUI::get_next_key()
     const int c = wgetch(m_window);
     wtimeout(m_window, -1);
 
-    if (c == ERR)
-        return {};
-
     if (c == KEY_MOUSE)
     {
         MEVENT ev;
@@ -623,23 +646,71 @@ Optional<Key> NCursesUI::get_next_key()
         }
     }
 
-    if (c > 0 and c < 27)
-    {
-        if (c == control('m') or c == control('j'))
-            return {Key::Return};
-        if (c == control('i'))
-            return {Key::Tab};
-        if (c == control('z'))
-        {
-            raise(SIGTSTP);
+    auto parse_key = [this](int c) -> Optional<Key> {
+        if (c == ERR)
             return {};
+
+        switch (c)
+        {
+        case KEY_BACKSPACE: case 127: return {Key::Backspace};
+        case KEY_DC: return {Key::Delete};
+        case KEY_UP: return {Key::Up};
+        case KEY_DOWN: return {Key::Down};
+        case KEY_LEFT: return {Key::Left};
+        case KEY_RIGHT: return {Key::Right};
+        case KEY_PPAGE: return {Key::PageUp};
+        case KEY_NPAGE: return {Key::PageDown};
+        case KEY_HOME: return {Key::Home};
+        case KEY_END: return {Key::End};
+        case KEY_BTAB: return {Key::BackTab};
+        case KEY_RESIZE: return resize(m_dimensions);
         }
-        return ctrl(Codepoint(c) - 1 + 'a');
-    }
-    else if (c == 27)
+
+        if (c > 0 and c < 27)
+        {
+            if (c == control('m') or c == control('j'))
+                return {Key::Return};
+            if (c == control('i'))
+                return {Key::Tab};
+            if (c == control('h'))
+                return {Key::Backspace};
+            if (c == control('z'))
+            {
+                raise(SIGTSTP);
+                return {};
+            }
+            return ctrl(Codepoint(c) - 1 + 'a');
+        }
+
+        for (int i = 0; i < 12; ++i)
+        {
+            if (c == KEY_F(i+1))
+                return {Key::F1 + i};
+        }
+
+        if (c >= 0 and c < 256)
+        {
+           ungetch(c);
+           struct getch_iterator
+           {
+               getch_iterator(WINDOW* win) : window(win) {}
+               int operator*() { return wgetch(window); }
+               getch_iterator& operator++() { return *this; }
+               getch_iterator& operator++(int) { return *this; }
+               bool operator== (const getch_iterator&) const { return false; }
+
+                WINDOW* window;
+           };
+           return Key{utf8::codepoint(getch_iterator{m_window},
+                                      getch_iterator{m_window})};
+        }
+        return {};
+    };
+
+    if (c == 27)
     {
         wtimeout(m_window, 0);
-        const Codepoint new_c = wgetch(m_window);
+        const int new_c = wgetch(m_window);
         if (new_c == '[') // potential CSI
         {
             const Codepoint csi_val = wgetch(m_window);
@@ -651,54 +722,13 @@ Optional<Key> NCursesUI::get_next_key()
             }
         }
         wtimeout(m_window, -1);
-        if (new_c != ERR)
-        {
-            if (new_c > 0 and new_c < 27)
-                return ctrlalt(Codepoint(new_c) - 1 + 'a');
-            return alt(new_c);
-        }
+
+        if (auto key = parse_key(new_c))
+            return alt(*key);
         else
             return {Key::Escape};
     }
-    else switch (c)
-    {
-    case KEY_BACKSPACE: case 127: return {Key::Backspace};
-    case KEY_DC: return {Key::Delete};
-    case KEY_UP: return {Key::Up};
-    case KEY_DOWN: return {Key::Down};
-    case KEY_LEFT: return {Key::Left};
-    case KEY_RIGHT: return {Key::Right};
-    case KEY_PPAGE: return {Key::PageUp};
-    case KEY_NPAGE: return {Key::PageDown};
-    case KEY_HOME: return {Key::Home};
-    case KEY_END: return {Key::End};
-    case KEY_BTAB: return {Key::BackTab};
-    case KEY_RESIZE: return resize(m_dimensions);
-    }
-
-    for (int i = 0; i < 12; ++i)
-    {
-        if (c == KEY_F(i+1))
-            return {Key::F1 + i};
-    }
-
-    if (c >= 0 and c < 256)
-    {
-       ungetch(c);
-       struct getch_iterator
-       {
-           getch_iterator(WINDOW* win) : window(win) {}
-           int operator*() { return wgetch(window); }
-           getch_iterator& operator++() { return *this; }
-           getch_iterator& operator++(int) { return *this; }
-           bool operator== (const getch_iterator&) const { return false; }
-
-            WINDOW* window;
-       };
-       return Key{utf8::codepoint(getch_iterator{m_window},
-                                  getch_iterator{m_window})};
-    }
-    return {};
+    return parse_key(c);
 }
 
 template<typename T>
@@ -845,6 +875,10 @@ void NCursesUI::menu_hide()
     mark_dirty(m_menu);
     m_menu.destroy();
     m_dirty = true;
+
+    // Recompute info as it does not have to avoid the menu anymore
+    if (m_info)
+        info_show(m_info.title, m_info.content, m_info.anchor, m_info.face, m_info.style);
 }
 
 static DisplayCoord compute_needed_size(StringView str)
@@ -935,11 +969,17 @@ String make_info_box(StringView title, StringView message, ColumnCount max_width
 
     auto line_count = max(assistant_size.line-1,
                           LineCount{(int)lines.size()} + 2);
+    const auto assistant_top_margin = (line_count - assistant_size.line+1) / 2;
     for (LineCount i = 0; i < line_count; ++i)
     {
         constexpr Codepoint dash{L'─'};
         if (not assistant.empty())
-            result += assistant[min((int)i, (int)assistant_size.line-1)];
+        {
+            if (i >= assistant_top_margin)
+                result += assistant[(int)min(i - assistant_top_margin, assistant_size.line-1)];
+            else
+                result += assistant[(int)assistant_size.line-1];
+        }
         if (i == 0)
         {
             if (title.empty())
@@ -985,6 +1025,9 @@ void NCursesUI::info_show(StringView title, StringView content,
         anchor = DisplayCoord{m_status_on_top ? 0 : m_dimensions.line,
                            m_dimensions.column-1};
     }
+    else if (style == InfoStyle::Modal)
+        info_box = make_info_box(m_info.title, m_info.content,
+                                 m_dimensions.column, {});
     else
     {
         if (m_status_on_top)
@@ -1005,6 +1048,11 @@ void NCursesUI::info_show(StringView title, StringView content,
     const Rect rect = {m_status_on_top ? 1_line : 0_line, m_dimensions};
     if (style == InfoStyle::MenuDoc and m_menu)
         pos = m_menu.pos + DisplayCoord{0_line, m_menu.size.column};
+    else if (style == InfoStyle::Modal)
+    {
+        auto half = [](const DisplayCoord& c) { return DisplayCoord{c.line / 2, c.column / 2}; };
+        pos = rect.pos + half(rect.size) - half(size);
+    }
     else
         pos = compute_pos(anchor, size, rect, m_menu, style == InfoStyle::InlineAbove);
 
@@ -1085,49 +1133,69 @@ void NCursesUI::enable_mouse(bool enabled)
 void NCursesUI::set_ui_options(const Options& options)
 {
     {
-        auto it = options.find("ncurses_assistant");
+        auto it = options.find("ncurses_assistant"_sv);
         if (it == options.end() or it->value == "clippy")
             m_assistant = assistant_clippy;
         else if (it->value == "cat")
             m_assistant = assistant_cat;
+        else if (it->value == "dilbert")
+            m_assistant = assistant_dilbert;
         else if (it->value == "none" or it->value == "off")
             m_assistant = ConstArrayView<StringView>{};
     }
 
     {
-        auto it = options.find("ncurses_status_on_top");
+        auto it = options.find("ncurses_status_on_top"_sv);
         m_status_on_top = it != options.end() and
             (it->value == "yes" or it->value == "true");
     }
 
     {
-        auto it = options.find("ncurses_buflist_show");
+        auto it = options.find("ncurses_buflist_show"_sv);
         m_buflist_show = it != options.end() and
             (it->value == "yes" or it->value == "true");
     }
 
     {
-        auto it = options.find("ncurses_buflist_separator");
+        auto it = options.find("ncurses_buflist_separator"_sv);
         m_buflist_separator = it != options.end() ? it->value : " ";
     }
 
     {
-        auto it = options.find("ncurses_set_title");
+        auto it = options.find("ncurses_set_title"_sv);
         m_set_title = it == options.end() or
             (it->value == "yes" or it->value == "true");
     }
 
     {
-        auto enable_mouse_it = options.find("ncurses_enable_mouse");
+        auto it = options.find("ncurses_change_colors"_sv);
+        auto value = it == options.end() or
+            (it->value == "yes" or it->value == "true");
+
+        if (can_change_color() and m_change_colors != value)
+        {
+            fputs("\033]104;\007", stdout); // try to reset palette
+            fflush(stdout);
+            m_colorpairs.clear();
+            m_colors = default_colors;
+            m_next_color = 16;
+            m_next_pair = 1;
+            m_active_pair = -1;
+        }
+        m_change_colors = value;
+    }
+
+    {
+        auto enable_mouse_it = options.find("ncurses_enable_mouse"_sv);
         enable_mouse(enable_mouse_it == options.end() or
                      enable_mouse_it->value == "yes" or
                      enable_mouse_it->value == "true");
 
-        auto wheel_up_it = options.find("ncurses_wheel_up_button");
+        auto wheel_up_it = options.find("ncurses_wheel_up_button"_sv);
         m_wheel_up_button = wheel_up_it != options.end() ?
             str_to_int_ifp(wheel_up_it->value).value_or(4) : 4;
 
-        auto wheel_down_it = options.find("ncurses_wheel_down_button");
+        auto wheel_down_it = options.find("ncurses_wheel_down_button"_sv);
         m_wheel_down_button = wheel_down_it != options.end() ?
             str_to_int_ifp(wheel_down_it->value).value_or(5) : 5;
     }

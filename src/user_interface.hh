@@ -2,7 +2,7 @@
 #define user_interface_hh_INCLUDED
 
 #include "array_view.hh"
-#include "id_map.hh"
+#include "hash_map.hh"
 
 #include <functional>
 
@@ -28,17 +28,24 @@ enum class InfoStyle
     Inline,
     InlineAbove,
     InlineBelow,
-    MenuDoc
+    MenuDoc,
+    Modal
 };
 
 enum class EventMode;
+
+enum class CursorMode
+{
+    Prompt,
+    Buffer,
+};
 
 using OnKeyCallback = std::function<void(Key key)>;
 
 class UserInterface
 {
 public:
-    virtual ~UserInterface() {}
+    virtual ~UserInterface() = default;
 
     virtual void menu_show(ConstArrayView<DisplayLine> choices,
                            DisplayCoord anchor, Face fg, Face bg,
@@ -64,11 +71,13 @@ public:
 
     virtual DisplayCoord dimensions() = 0;
 
+    virtual void set_cursor(CursorMode mode, DisplayCoord coord) = 0;
+
     virtual void refresh(bool force) = 0;
 
     virtual void set_on_key(OnKeyCallback callback) = 0;
 
-    using Options = IdMap<String, MemoryDomain::Options>;
+    using Options = HashMap<String, String, MemoryDomain::Options>;
     virtual void set_ui_options(const Options& options) = 0;
 };
 

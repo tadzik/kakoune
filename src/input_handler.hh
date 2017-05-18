@@ -35,7 +35,7 @@ enum class PromptFlags
     Password = 1 << 0,
     DropHistoryEntriesWithBlankPrefix = 1 << 1
 };
-template<> struct WithBitOps<PromptFlags> : std::true_type {};
+constexpr bool with_bit_ops(Meta::Type<PromptFlags>) { return true; }
 
 
 using KeyCallback = std::function<void (Key, Context&)>;
@@ -43,6 +43,7 @@ using KeyCallback = std::function<void (Key, Context&)>;
 class InputMode;
 enum class InsertMode : unsigned;
 enum class KeymapMode : char;
+enum class CursorMode;
 
 class InputHandler : public SafeCountable
 {
@@ -91,6 +92,8 @@ public:
 
     DisplayLine mode_line() const;
 
+    std::pair<CursorMode, DisplayCoord> get_cursor_info() const;
+
     // Force an input handler into normal mode temporarily
     struct ScopedForceNormal
     {
@@ -131,10 +134,9 @@ enum class AutoInfo
     Normal  = 1 << 2
 };
 
-template<>
-struct WithBitOps<AutoInfo> : std::true_type {};
+constexpr bool with_bit_ops(Meta::Type<AutoInfo>) { return true; }
 
-constexpr Array<EnumDesc<AutoInfo>, 3> enum_desc(AutoInfo)
+constexpr Array<EnumDesc<AutoInfo>, 3> enum_desc(Meta::Type<AutoInfo>)
 {
     return { {
         { AutoInfo::Command, "command"},

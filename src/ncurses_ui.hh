@@ -1,12 +1,14 @@
 #ifndef ncurses_hh_INCLUDED
 #define ncurses_hh_INCLUDED
 
+#include "array_view.hh"
 #include "coord.hh"
 #include "event_manager.hh"
 #include "face.hh"
+#include "hash_map.hh"
+#include "optional.hh"
+#include "string.hh"
 #include "user_interface.hh"
-#include "array_view.hh"
-#include "unordered_map.hh"
 
 namespace Kakoune
 {
@@ -17,7 +19,7 @@ class NCursesUI : public UserInterface
 {
 public:
     NCursesUI();
-    ~NCursesUI();
+    ~NCursesUI() override;
 
     NCursesUI(const NCursesUI&) = delete;
     NCursesUI& operator=(const NCursesUI&) = delete;
@@ -44,8 +46,9 @@ public:
                    InfoStyle style) override;
     void info_hide() override;
 
-    void refresh(bool force) override;
+    void set_cursor(CursorMode mode, DisplayCoord coord) override;
 
+    void refresh(bool force) override;
 
     DisplayCoord dimensions() override;
     void set_on_key(OnKeyCallback callback) override;
@@ -80,9 +83,11 @@ private:
     DisplayCoord m_dimensions;
 
     using ColorPair = std::pair<Color, Color>;
-    UnorderedMap<Color, int, MemoryDomain::Faces> m_colors;
-    UnorderedMap<ColorPair, int, MemoryDomain::Faces> m_colorpairs;
+    HashMap<Color, int, MemoryDomain::Faces> m_colors;
+    HashMap<ColorPair, int, MemoryDomain::Faces> m_colorpairs;
     int m_next_color = 16;
+    int m_next_pair = 1;
+    int m_active_pair = -1;
 
     struct Window : Rect
     {
@@ -120,6 +125,12 @@ private:
         InfoStyle style;
     } m_info;
 
+    struct Cursor
+    {
+        CursorMode mode;
+        DisplayCoord coord;
+    } m_cursor;
+
     FDWatcher m_stdin_watcher;
     OnKeyCallback m_on_key;
 
@@ -136,6 +147,7 @@ private:
     int m_wheel_down_button = 5;
 
     bool m_set_title = true;
+    bool m_change_colors = true;
 
     bool m_dirty = false;
 };

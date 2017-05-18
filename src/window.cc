@@ -8,6 +8,7 @@
 #include "input_handler.hh"
 #include "client.hh"
 #include "buffer_utils.hh"
+#include "option.hh"
 
 #include <algorithm>
 #include <sstream>
@@ -16,21 +17,19 @@ namespace Kakoune
 {
 
 // Implementation in highlighters.cc
-void highlight_selections(const Context& context, HighlightFlags flags, DisplayBuffer& display_buffer, BufferRange range);
-void expand_tabulations(const Context& context, HighlightFlags flags, DisplayBuffer& display_buffer, BufferRange range);
-void expand_unprintable(const Context& context, HighlightFlags flags, DisplayBuffer& display_buffer, BufferRange range);
+void setup_builtin_highlighters(HighlighterGroup& group);
 
 Window::Window(Buffer& buffer)
     : Scope(buffer),
-      m_buffer(&buffer)
+      m_buffer(&buffer),
+      m_highlighters{HighlightPass::All},
+      m_builtin_highlighters{HighlightPass::All}
 {
     run_hook_in_own_context("WinCreate", buffer.name());
 
     options().register_watcher(*this);
 
-    m_builtin_highlighters.add_child({"tabulations"_str, make_simple_highlighter(expand_tabulations)});
-    m_builtin_highlighters.add_child({"unprintable"_str, make_simple_highlighter(expand_unprintable)});
-    m_builtin_highlighters.add_child({"selections"_str,  make_simple_highlighter(highlight_selections)});
+    setup_builtin_highlighters(m_builtin_highlighters);
 
     for (auto& option : options().flatten_options())
         on_option_changed(*option);
@@ -121,9 +120,9 @@ const DisplayBuffer& Window::update_display_buffer(const Context& context)
         return m_display_buffer;
 
     kak_assert(&buffer() == &context.buffer());
-    scroll_to_keep_selection_visible_ifn(context);
+    compute_display_setup(context);
 
-    for (LineCount line = 0; line < m_dimensions.line; ++line)
+    for (LineCount line = 0; line < m_range.line; ++line)
     {
         LineCount buffer_line = m_position.line + line;
         if (buffer_line >= buffer().line_count())
@@ -133,8 +132,10 @@ const DisplayBuffer& Window::update_display_buffer(const Context& context)
 
     m_display_buffer.compute_range();
     BufferRange range{{0,0}, buffer().end_coord()};
-    m_highlighters.highlight(context, HighlightFlags::Highlight, m_display_buffer, range);
-    m_builtin_highlighters.highlight(context, HighlightFlags::Highlight, m_display_buffer, range);
+    for (auto pass : { HighlightPass::Wrap, HighlightPass::Move, HighlightPass::Colorize })
+        m_highlighters.highlight(context, pass, m_display_buffer, range);
+    for (auto pass : { HighlightPass::Wrap, HighlightPass::Move, HighlightPass::Colorize })
+        m_builtin_highlighters.highlight(context, pass, m_display_buffer, range);
 
     // cut the start of the line before m_position.column
     for (auto& line : lines)
@@ -170,94 +171,51 @@ void Window::set_dimensions(DisplayCoord dimensions)
     }
 }
 
-static LineCount adapt_view_pos(LineCount line, LineCount offset,
-                                LineCount view_pos, LineCount view_size,
-                                LineCount buffer_size)
+void Window::compute_display_setup(const Context& context)
 {
-    offset = std::min(offset, (view_size + 1) / 2);
-    if (line - offset < view_pos)
-        return std::max(0_line, line - offset);
-    else if (line + offset >= view_pos + view_size)
-        return std::max(0_line, line + offset - view_size + 1);
-    return view_pos;
-}
+    DisplayCoord offset = options()["scrolloff"].get<DisplayCoord>();
+    offset.line = std::min(offset.line, (m_dimensions.line + 1) / 2);
+    offset.column = std::min(offset.column, (m_dimensions.column + 1) / 2);
 
-static ColumnCount adapt_view_pos(const DisplayBuffer& display_buffer, ColumnCount offset,
-                                BufferCoord pos, ColumnCount view_pos, ColumnCount view_size)
-{
-    offset = std::min(offset, (view_size + 1) / 2);
-    ColumnCount buffer_column = 0;
-    ColumnCount non_buffer_column = 0;
-    for (auto& line : display_buffer.lines())
+    const int tabstop = context.options()["tabstop"].get<int>();
+    const auto& cursor = context.selections().main().cursor();
+
+    // Ensure cursor line is visible
+    if (cursor.line - offset.line < m_position.line)
+        m_position.line = std::max(0_line, cursor.line - offset.line);
+    if (cursor.line + offset.line >= m_position.line + m_dimensions.line)
+        m_position.line = std::min(buffer().line_count()-1, cursor.line + offset.line - m_dimensions.line + 1);
+
+    DisplaySetup setup{
+        m_position,
+        m_dimensions,
+        {cursor.line - m_position.line,
+         get_column(buffer(), tabstop, cursor) - m_position.column},
+        offset
+    };
+    for (auto pass : { HighlightPass::Move, HighlightPass::Wrap })
+        m_highlighters.compute_display_setup(context, pass, setup);
+    for (auto pass : { HighlightPass::Move, HighlightPass::Wrap })
+        m_builtin_highlighters.compute_display_setup(context, pass, setup);
+
+    // now ensure the cursor column is visible
     {
-        for (auto& atom : line)
+        auto underflow = setup.cursor_pos.column - setup.scroll_offset.column;
+        if (underflow < 0)
         {
-            if (atom.has_buffer_range())
-            {
-                if (atom.begin() <= pos and atom.end() > pos)
-                {
-                    ColumnCount pos_beg, pos_end;
-                    if (atom.type() == DisplayAtom::Range)
-                    {
-                        auto& buf = atom.buffer();
-                        pos_beg = buffer_column +
-                            column_length(buf, atom.begin(), pos);
-                        pos_end = pos_beg+1;
-                    }
-                    else
-                    {
-                        pos_beg = buffer_column;
-                        pos_end = pos_beg + atom.length();
-                    }
-
-                    if (pos_beg - offset < view_pos)
-                        return std::max(0_col, pos_beg - offset);
-
-                    if (pos_end + offset >= view_pos + view_size - non_buffer_column)
-                        return pos_end + offset - view_size + non_buffer_column;
-                }
-                buffer_column += atom.length();
-            }
-            else
-                non_buffer_column += atom.length();
+            setup.window_pos.column += underflow;
+            setup.cursor_pos.column -= underflow;
+        }
+        auto overflow = setup.cursor_pos.column + setup.scroll_offset.column - setup.window_range.column + 1;
+        if (overflow > 0)
+        {
+            setup.window_pos.column += overflow;
+            setup.cursor_pos.column -= overflow;
         }
     }
-    return view_pos;
-}
 
-void Window::scroll_to_keep_selection_visible_ifn(const Context& context)
-{
-    auto& selection = context.selections().main();
-    const auto& anchor = selection.anchor();
-    const auto& cursor  = selection.cursor();
-
-    const DisplayCoord offset = options()["scrolloff"].get<DisplayCoord>();
-
-    // scroll lines if needed, try to get as much of the selection visible as possible
-    m_position.line = adapt_view_pos(anchor.line, offset.line, m_position.line,
-                                     m_dimensions.line, buffer().line_count());
-    m_position.line = adapt_view_pos(cursor.line,  offset.line, m_position.line,
-                                     m_dimensions.line, buffer().line_count());
-
-    // highlight only the line containing the cursor
-    DisplayBuffer display_buffer;
-    DisplayBuffer::LineList& lines = display_buffer.lines();
-    lines.emplace_back(AtomList{ {buffer(), cursor.line, cursor.line+1} });
-
-    display_buffer.compute_range();
-    BufferRange range{cursor.line, cursor.line + 1};
-    m_highlighters.highlight(context, HighlightFlags::MoveOnly, display_buffer, range);
-    m_builtin_highlighters.highlight(context, HighlightFlags::MoveOnly, display_buffer, range);
-
-    // now we can compute where the cursor is in display columns
-    // (this is only valid if highlighting one line and multiple lines put
-    // the cursor in the same position, however I do not find any sane example
-    // of highlighters not doing that)
-    m_position.column = adapt_view_pos(display_buffer, offset.column,
-                                       anchor.line == cursor.line ? anchor : cursor.line,
-                                       m_position.column, m_dimensions.column);
-    m_position.column = adapt_view_pos(display_buffer, offset.column, cursor,
-                                       m_position.column, m_dimensions.column);
+    m_position = setup.window_pos;
+    m_range = setup.window_range;
 }
 
 namespace
@@ -321,36 +279,11 @@ BufferCoord Window::buffer_coord(DisplayCoord coord) const
         return {0,0};
     if (coord <= 0_line)
         coord = {0,0};
-    if ((int)coord.line >= m_display_buffer.lines().size())
+    if ((size_t)coord.line >= m_display_buffer.lines().size())
         coord = DisplayCoord{(int)m_display_buffer.lines().size()-1, INT_MAX};
 
     return find_buffer_coord(m_display_buffer.lines()[(int)coord.line],
                              buffer(), coord.column);
-}
-
-BufferCoord Window::offset_coord(BufferCoord coord, CharCount offset)
-{
-    return buffer().offset_coord(coord, offset);
-}
-
-BufferCoordAndTarget Window::offset_coord(BufferCoordAndTarget coord, LineCount offset)
-{
-    auto line = clamp(coord.line + offset, 0_line, buffer().line_count()-1);
-    DisplayBuffer display_buffer;
-    DisplayBuffer::LineList& lines = display_buffer.lines();
-    lines.emplace_back(AtomList{ {buffer(), coord.line, coord.line+1} });
-    lines.emplace_back(AtomList{ {buffer(), line, line+1} });
-    display_buffer.compute_range();
-
-    BufferRange range{ std::min(line, coord.line), std::max(line,coord.line)+1};
-
-    InputHandler input_handler{{ *m_buffer, Selection{} }, Context::Flags::Transient};
-    input_handler.context().set_window(*this);
-    m_highlighters.highlight(input_handler.context(), HighlightFlags::MoveOnly, display_buffer, range);
-    m_builtin_highlighters.highlight(input_handler.context(), HighlightFlags::MoveOnly, display_buffer, range);
-
-    ColumnCount column = coord.target == -1 ? find_display_column(lines[0], buffer(), coord) : coord.target;
-    return { find_buffer_coord(lines[1], buffer(), column), column };
 }
 
 void Window::clear_display_buffer()

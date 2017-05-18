@@ -2,6 +2,7 @@
 #define insert_completer_hh_INCLUDED
 
 #include "option_manager.hh"
+#include "option.hh"
 #include "display_buffer.hh"
 #include "vector.hh"
 
@@ -37,18 +38,18 @@ using InsertCompleterDescList = Vector<InsertCompleterDesc, MemoryDomain::Option
 String option_to_string(const InsertCompleterDesc& opt);
 void option_from_string(StringView str, InsertCompleterDesc& opt);
 
-template<> struct option_type_name<InsertCompleterDesc>
+inline StringView option_type_name(Meta::Type<InsertCompleterDesc>)
 {
-    static constexpr StringView name() { return "completer"; }
-};
+    return "completer";
+}
 
 using CompletionCandidate = std::tuple<String, String, String>;
 using CompletionList = PrefixedList<String, CompletionCandidate>;
 
-template<> struct option_type_name<CompletionList>
+inline StringView option_type_name(Meta::Type<CompletionList>)
 {
-    static constexpr StringView name() { return "completions"; }
-};
+    return "completions";
+}
 
 struct InsertCompletion
 {
@@ -64,10 +65,18 @@ struct InsertCompletion
 
     using CandidateList = Vector<Candidate, MemoryDomain::Completion>;
 
+    CandidateList candidates;
     BufferCoord begin;
     BufferCoord end;
-    CandidateList candidates;
     size_t timestamp;
+
+    InsertCompletion() : timestamp{0} {}
+
+    InsertCompletion(CandidateList candidates,
+                     BufferCoord begin, BufferCoord end,
+                     size_t timestamp)
+      : candidates{std::move(candidates)}, begin{begin}, end{end},
+        timestamp{timestamp} {}
 
     bool is_valid() const { return not candidates.empty(); }
 };
@@ -78,7 +87,7 @@ public:
     InsertCompleter(Context& context);
     InsertCompleter(const InsertCompleter&) = delete;
     InsertCompleter& operator=(const InsertCompleter&) = delete;
-    ~InsertCompleter();
+    ~InsertCompleter() override;
 
     void select(int offset, Vector<Key>& keystrokes);
     void update();

@@ -2,14 +2,14 @@
 #define event_manager_hh_INCLUDED
 
 #include "clock.hh"
+#include "meta.hh"
 #include "utils.hh"
-#include "flags.hh"
 #include "vector.hh"
 
 #include <functional>
 
 #include <sys/select.h>
-#include <signal.h>
+#include <csignal>
 
 namespace Kakoune
 {
@@ -28,7 +28,7 @@ enum class FdEvents
     Except = 1 << 2,
 };
 
-template<> struct WithBitOps<FdEvents> : std::true_type {};
+constexpr bool with_bit_ops(Meta::Type<FdEvents>) { return true; }
 
 class FDWatcher
 {

@@ -52,7 +52,7 @@ private:
 struct SafeCountablePolicy
 {
 #ifdef KAK_DEBUG
-    static void inc_ref(const SafeCountable* sc, void* ptr)
+    static void inc_ref(const SafeCountable* sc, void* ptr) noexcept
     {
         ++sc->m_count;
         #ifdef SAFE_PTR_TRACK_CALLSTACKS
@@ -60,31 +60,31 @@ struct SafeCountablePolicy
         #endif
     }
 
-    static void dec_ref(const SafeCountable* sc, void* ptr)
+    static void dec_ref(const SafeCountable* sc, void* ptr) noexcept
     {
         --sc->m_count;
         kak_assert(sc->m_count >= 0);
         #ifdef SAFE_PTR_TRACK_CALLSTACKS
         auto it = std::find_if(sc->m_callstacks.begin(), sc->m_callstacks.end(),
-                               [=](const Callstack& cs) { return cs.ptr == ptr; });
+                               [=](const SafeCountable::Callstack& cs) { return cs.ptr == ptr; });
         kak_assert(it != sc->m_callstacks.end());
         sc->m_callstacks.erase(it);
         #endif
     }
 
-    static void ptr_moved(const SafeCountable* sc, void* from, void* to)
+    static void ptr_moved(const SafeCountable* sc, void* from, void* to) noexcept
     {
         #ifdef SAFE_PTR_TRACK_CALLSTACKS
         auto it = std::find_if(sc->m_callstacks.begin(), sc->m_callstacks.end(),
-                               [=](const Callstack& cs) { return cs.ptr == from; });
+                               [=](const SafeCountable::Callstack& cs) { return cs.ptr == from; });
         kak_assert(it != sc->m_callstacks.end());
         it->ptr = to;
         #endif
     }
 #else
-    static void inc_ref(const SafeCountable*, void* ptr) {}
-    static void dec_ref(const SafeCountable*, void* ptr) {}
-    static void ptr_moved(const SafeCountable*, void*, void*) {}
+    static void inc_ref(const SafeCountable*, void* ptr) noexcept {}
+    static void dec_ref(const SafeCountable*, void* ptr) noexcept {}
+    static void ptr_moved(const SafeCountable*, void*, void*) noexcept {}
 #endif
 };
 

@@ -24,8 +24,11 @@ command *q!* has to be used).
 	open buffer on file, go to given line and column. If file is already
 	opened, just switch to this file. Use edit! to force reloading
 
-*w[rite]* [<filename>]::
-	write buffer to <filename> or use it's name if filename is not given
+*w[rite][!]* [<filename>]::
+	write buffer to <filename> or use its name if filename is not
+	given. If the file is write-protected, its permissions are temporarily
+	changed to allow saving the buffer and restored afterwards when
+	the write! command is used.
 
 *w[rite]a[ll]*::
 	write all buffers that are associated to a file
@@ -54,10 +57,6 @@ command *q!* has to be used).
 
 *source* <filename>::
 	execute commands in <filename>
-
-*runtime* <filename>::
-	execute commands in <filename>, <filename> is relative to kak
-	executable path
 
 *colorscheme* <name>::
 	load named colorscheme
@@ -122,17 +121,11 @@ command *q!* has to be used).
 	define a new command (c.f. the 'Declaring new commands' section below)
 
 *map* <scope> <mode> <key> <keys>::
-	make *key* behave as if *keys* were typed. with *scope*
-	being one of *global*, *buffer* or *window*, *mode* being
-	*insert*, *normal*, *prompt*, *menu* or *user*.
-
-	*user* mode allows for user mapping behind the *,* key. Keys
-	will be executed in normal mode.
+	bind a list of keys to a combination (c.f. the 'mapping' documentation
+	page)
 
 *unmap* <scope> <mode> <key> [<expected>]::
-	remove the mapping of *key* in given *scope* and *mode*, if
-	expected is specified, only remove the mapping it if matches
-	the expected keys.
+	unbind a key combination (c.f. the 'mapping' documentation page)
 
 *hook* [-group <group>] <scope> <hook_name> <filtering_regex> <command>::
 	execute a command whenever an event is triggered (c.f. the 'hooks'
@@ -164,6 +157,10 @@ commands:
 	*-password* switch hides the entered text and clears the register
 	after command execution.
 
+        The *-on-change* and *-on-abort* switches, followed by a command
+        will have this command executed whenever the prompt content changes
+        or the prompt is aborted, respectively.
+
 *on-key* <command>::
 	wait for next key from user, then execute <command>, the key is
 	available through the `key` value, accessible through `$kak_key`
@@ -171,7 +168,7 @@ commands:
 
 *menu* <label1> <commands1> <label2> <commands2> ...::
 	display a menu using labels, the selected label’s commands are
-	executed. menu can take an *-auto-single* argument, to automatically
+	executed. The *menu* command can take an *-auto-single* argument, to automatically
 	run commands when only one choice is provided, and a *-select-cmds*
 	argument, in which case menu takes three argument per item, the
 	last one being a command to execute when the item is selected (but
@@ -190,7 +187,7 @@ commands:
 		set the title of the message box
 
 *try* <commands> catch <on_error_commands>::
-	prevent an error in *commands* from aborting the whole commands
+	prevent an error in *commands* from aborting the whole command
 	execution, execute *on_error_commands* instead. If nothing is to be
 	done on error, the catch part can be omitted
 
@@ -246,8 +243,8 @@ New commands can be defined using the *define-command* command:
 *-docstring*:::
 	define the documentation string for the command
 
-Using shell expansion allows to define complex commands or to access Kakoune
-state:
+Using shell expansion allows defining complex commands or accessing
+Kakoune's state:
 
 --------------------------------------------------------
 def " print_selection %{ echo %sh{ ${kak_selection} } }"

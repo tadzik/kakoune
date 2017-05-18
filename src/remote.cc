@@ -7,7 +7,8 @@
 #include "display_buffer.hh"
 #include "event_manager.hh"
 #include "file.hh"
-#include "id_map.hh"
+#include "hash_map.hh"
+#include "optional.hh"
 #include "user_interface.hh"
 
 #include <sys/types.h>
@@ -35,6 +36,7 @@ enum class MessageType : char
     Draw,
     DrawStatus,
     DrawBufList,
+    SetCursor,
     Refresh,
     SetOptions,
     Key
@@ -92,8 +94,8 @@ public:
         write(ConstArrayView<T>(vec));
     }
 
-    template<typename Val, MemoryDomain domain>
-    void write(const IdMap<Val, domain>& map)
+    template<typename Key, typename Val, MemoryDomain domain>
+    void write(const HashMap<Key, Val, domain>& map)
     {
         write<uint32_t>(map.size());
         for (auto& val : map)
@@ -101,6 +103,14 @@ public:
             write(val.key);
             write(val.value);
         }
+    }
+
+    template<typename T>
+    void write(const Optional<T>& val)
+    {
+        write((bool)val);
+        if (val)
+            write(*val);
     }
 
     void write(Color color)
@@ -205,19 +215,27 @@ public:
         return res;
     }
 
-    template<typename Val, MemoryDomain domain>
-    IdMap<Val, domain> read_idmap()
+    template<typename Key, typename Val, MemoryDomain domain>
+    HashMap<Key, Val, domain> read_hash_map()
     {
         uint32_t size = read<uint32_t>();
-        IdMap<Val, domain> res;
+        HashMap<Key, Val, domain> res;
         res.reserve(size);
         while (size--)
         {
-            auto key = read<String>();
+            auto key = read<Key>();
             auto val = read<Val>();
-            res.append({std::move(key), std::move(val)});
+            res.insert({std::move(key), std::move(val)});
         }
         return res;
+    }
+
+    template<typename T>
+    Optional<T> read_optional()
+    {
+        if (not read<bool>())
+            return {};
+        return read<T>();
     }
 
     void reset()
@@ -298,7 +316,7 @@ class RemoteUI : public UserInterface
 {
 public:
     RemoteUI(int socket, DisplayCoord dimensions);
-    ~RemoteUI();
+    ~RemoteUI() override;
 
     void menu_show(ConstArrayView<DisplayLine> choices,
                    DisplayCoord anchor, Face fg, Face bg,
@@ -321,6 +339,7 @@ public:
 
     void draw_buflist(const DisplayLine& buflist,
                       const Face& default_face) override;
+    void set_cursor(CursorMode mode, DisplayCoord coord) override;
 
     void refresh(bool force) override;
 
@@ -346,7 +365,7 @@ private:
 
 static bool send_data(int fd, RemoteBuffer& buffer)
 {
-    while (buffer.size() > 0 and fd_writable(fd))
+    while (not buffer.empty() and fd_writable(fd))
     {
       int res = ::write(fd, buffer.data(), buffer.size());
       if (res <= 0)
@@ -479,6 +498,14 @@ void RemoteUI::draw_buflist(const DisplayLine& buflist,
     m_socket_watcher.events() |= FdEvents::Write;
 }
 
+void RemoteUI::set_cursor(CursorMode mode, DisplayCoord coord)
+{
+    MsgWriter msg{m_send_buffer, MessageType::SetCursor};
+    msg.write(mode);
+    msg.write(coord);
+    m_socket_watcher.events() |= FdEvents::Write;
+}
+
 void RemoteUI::refresh(bool force)
 {
     MsgWriter msg{m_send_buffer, MessageType::Refresh};
@@ -491,15 +518,6 @@ void RemoteUI::set_ui_options(const Options& options)
     MsgWriter msg{m_send_buffer, MessageType::SetOptions};
     msg.write(options);
     m_socket_watcher.events() |= FdEvents::Write;
-}
-
-static StringView tmpdir()
-{
-    StringView tmpdir = getenv("TMPDIR");
-    if (not tmpdir.empty())
-        return tmpdir.back() == '/' ? tmpdir.substr(0_byte, tmpdir.length()-1)
-                                    : tmpdir;
-    return "/tmp";
 }
 
 static sockaddr_un session_addr(StringView session)
@@ -533,7 +551,8 @@ bool check_session(StringView session)
 }
 
 RemoteClient::RemoteClient(StringView session, std::unique_ptr<UserInterface>&& ui,
-                           const EnvVarMap& env_vars, StringView init_command)
+                           const EnvVarMap& env_vars, StringView init_command,
+                           Optional<BufferCoord> init_coord)
     : m_ui(std::move(ui))
 {
     int sock = connect_to(session);
@@ -541,6 +560,7 @@ RemoteClient::RemoteClient(StringView session, std::unique_ptr<UserInterface>&& 
     {
         MsgWriter msg{m_send_buffer, MessageType::Connect};
         msg.write(init_command);
+        msg.write(init_coord);
         msg.write(m_ui->dimensions());
         msg.write(env_vars);
     }
@@ -621,11 +641,18 @@ RemoteClient::RemoteClient(StringView session, std::unique_ptr<UserInterface>&& 
                 m_ui->draw_buflist(buflist, default_face);
                 break;
             }
+            case MessageType::SetCursor:
+            {
+                auto mode = reader.read<CursorMode>();
+                auto coord = reader.read<DisplayCoord>();
+                m_ui->set_cursor(mode, coord);
+                break;
+            }
             case MessageType::Refresh:
                 m_ui->refresh(reader.read<bool>());
                 break;
             case MessageType::SetOptions:
-                m_ui->set_ui_options(reader.read_idmap<String, MemoryDomain::Options>());
+                m_ui->set_ui_options(reader.read_hash_map<String, String, MemoryDomain::Options>());
                 break;
             default:
                 kak_assert(false);
@@ -681,12 +708,13 @@ private:
             case MessageType::Connect:
             {
                 auto init_cmds = m_reader.read<String>();
+                auto init_coord = m_reader.read_optional<BufferCoord>();
                 auto dimensions = m_reader.read<DisplayCoord>();
-                auto env_vars = m_reader.read_idmap<String, MemoryDomain::EnvVars>();
-                RemoteUI* ui = new RemoteUI{sock, dimensions};
+                auto env_vars = m_reader.read_hash_map<String, String, MemoryDomain::EnvVars>();
+                auto* ui = new RemoteUI{sock, dimensions};
                 if (auto* client = ClientManager::instance().create_client(
                                        std::unique_ptr<UserInterface>(ui),
-                                       std::move(env_vars), init_cmds, {}))
+                                       std::move(env_vars), init_cmds, init_coord))
                     ui->set_client(client);
 
                 Server::instance().remove_accepter(this);

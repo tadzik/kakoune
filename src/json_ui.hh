@@ -4,6 +4,7 @@
 #include "user_interface.hh"
 #include "event_manager.hh"
 #include "coord.hh"
+#include "string.hh"
 
 namespace Kakoune
 {
@@ -39,6 +40,8 @@ public:
                    DisplayCoord anchor, Face face,
                    InfoStyle style) override;
     void info_hide() override;
+
+    void set_cursor(CursorMode mode, DisplayCoord coord) override;
 
     void refresh(bool force) override;
 

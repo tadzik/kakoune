@@ -11,19 +11,19 @@ hook global BufCreate .*\.go %{
 # Highlighters
 # ‾‾‾‾‾‾‾‾‾‾‾‾
 
-addhl -group / regions -default code go \
+add-highlighter -group / regions -default code go \
     back_string '`' '`' '' \
     double_string '"' (?<!\\)(\\\\)*" '' \
     single_string "'" (?<!\\)(\\\\)*' '' \
     comment /\* \*/ '' \
     comment '//' $ ''
 
-addhl -group /go/back_string fill string
-addhl -group /go/double_string fill string
-addhl -group /go/single_string fill string
-addhl -group /go/comment fill comment
+add-highlighter -group /go/back_string fill string
+add-highlighter -group /go/double_string fill string
+add-highlighter -group /go/single_string fill string
+add-highlighter -group /go/comment fill comment
 
-addhl -group /go/code regex %{-?([0-9]*\.(?!0[xX]))?\b([0-9]+|0[xX][0-9a-fA-F]+)\.?([eE][+-]?[0-9]+)?i?\b} 0:value
+add-highlighter -group /go/code regex %{-?([0-9]*\.(?!0[xX]))?\b([0-9]+|0[xX][0-9a-fA-F]+)\.?([eE][+-]?[0-9]+)?i?\b} 0:value
 
 %sh{
     # Grammar
@@ -42,18 +42,18 @@ addhl -group /go/code regex %{-?([0-9]*\.(?!0[xX]))?\b([0-9]+|0[xX][0-9a-fA-F]+)
 
     # Highlight keywords
     printf %s "
-        addhl -group /go/code regex \b(${keywords})\b 0:keyword
-        addhl -group /go/code regex \b(${attributes})\b 0:attribute
-        addhl -group /go/code regex \b(${types})\b 0:type
-        addhl -group /go/code regex \b(${values})\b 0:value
-        addhl -group /go/code regex \b(${functions})\b 0:builtin
+        add-highlighter -group /go/code regex \b(${keywords})\b 0:keyword
+        add-highlighter -group /go/code regex \b(${attributes})\b 0:attribute
+        add-highlighter -group /go/code regex \b(${types})\b 0:type
+        add-highlighter -group /go/code regex \b(${values})\b 0:value
+        add-highlighter -group /go/code regex \b(${functions})\b 0:builtin
     "
 }
 
 # Commands
 # ‾‾‾‾‾‾‾‾
 
-def -hidden _go-indent-on-new-line %~
+def -hidden go-indent-on-new-line %~
     eval -draft -itersel %=
         # preserve previous line indent
         try %{ exec -draft \;K<a-&> }
@@ -72,12 +72,12 @@ def -hidden _go-indent-on-new-line %~
     =
 ~
 
-def -hidden _go-indent-on-opening-curly-brace %[
+def -hidden go-indent-on-opening-curly-brace %[
     # align indent with opening paren when { is entered on a new line after the closing paren
     try %[ exec -draft -itersel h<a-F>)M <a-k> \`\(.*\)\h*\n\h*\{\' <ret> s \`|.\' <ret> 1<a-&> ]
 ]
 
-def -hidden _go-indent-on-closing-curly-brace %[
+def -hidden go-indent-on-closing-curly-brace %[
     # align to opening curly brace when alone on a line
     try %[ exec -itersel -draft <a-h><a-k>^\h+\}$<ret>hms\`|.\'<ret>1<a-&> ]
 ]
@@ -85,19 +85,19 @@ def -hidden _go-indent-on-closing-curly-brace %[
 # Initialization
 # ‾‾‾‾‾‾‾‾‾‾‾‾‾‾
 
-hook -group go-highlight global WinSetOption filetype=go %{ addhl ref go }
+hook -group go-highlight global WinSetOption filetype=go %{ add-highlighter ref go }
 
 hook global WinSetOption filetype=go %{
     # cleanup trailing whitespaces when exiting insert mode
     hook window InsertEnd .* -group go-hooks %{ try %{ exec -draft <a-x>s^\h+$<ret>d } }
-    hook window InsertChar \n -group go-indent _go-indent-on-new-line
-    hook window InsertChar \{ -group go-indent _go-indent-on-opening-curly-brace
-    hook window InsertChar \} -group go-indent _go-indent-on-closing-curly-brace
+    hook window InsertChar \n -group go-indent go-indent-on-new-line
+    hook window InsertChar \{ -group go-indent go-indent-on-opening-curly-brace
+    hook window InsertChar \} -group go-indent go-indent-on-closing-curly-brace
 }
 
-hook -group go-highlight global WinSetOption filetype=(?!go).* %{ rmhl go }
+hook -group go-highlight global WinSetOption filetype=(?!go).* %{ remove-highlighter go }
 
 hook global WinSetOption filetype=(?!go).* %{
-    rmhooks window go-hooks
-    rmhooks window go-indent
+    remove-hooks window go-hooks
+    remove-hooks window go-indent
 }

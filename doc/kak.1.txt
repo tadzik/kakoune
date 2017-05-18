@@ -7,7 +7,7 @@ kak - a vim inspired, selection oriented code editor
 
 SYNOPSIS
 --------
-*kak* [-q] [-n] [-l] [-ro] [-clear] [-ui ui_type] [-e command] [-f keys] [-p session_id] [-c session_id|[[-d] -s session_id] file ...
+*kak* [-help] [-q] [-n] [-l] [-ro] [-clear] [-ui ui_type] [-e command] [-f keys] [-p session_id] [-c session_id|[[-d] -s session_id] [+line[:column]|+:] file ...
 
 DESCRIPTION
 -----------
@@ -26,6 +26,9 @@ stays fixed and the cursor one moves around.
 
 OPTIONS
 -------
+-help::
+	display a help message and quit
+
 -n::
 	do not load resource files on startup ('kakrc', 'autoload', 'rc' etc)
 
@@ -51,7 +54,7 @@ OPTIONS
 	connect to the given session
 
 -s <session_id>::
-	rename the current session name to *session_id*
+	set the current session name to *session_id*
 
 -ui <type>::
 	select the user interface, can be one of 'ncurses', 'dummy' or 'json'
@@ -61,6 +64,10 @@ OPTIONS
 
 -ro::
 	enter in 'readonly mode', all the buffers opened will not be written to disk
+
++line[:column]::
+	specify a target line and column for the first file; when the plus sign is followed by only a colon,
+	then the cursor is sent to the last line of the file
 
 file::
 	one or more files to edit
@@ -93,7 +100,7 @@ which will source additional files:
 
 	* if the *$XDG_CONFIG_HOME*'/kak/autoload' directory exists, load every '*.kak' files in it, and load
 		recursively any subdirectory
-	* if it does not exists, fall back to the system wide autoload directory in '../share/kak/autoload'
+	* if it does not exist, fall back to the system wide autoload directory in '../share/kak/autoload'
 
 After that, if it exists, source the *$XDG_CONFIG_HOME*'/kak/kakrc' file which should be used for user
 configuration. In order to continue autoloading site-wide files with a local autoload directory, just add a symbolic

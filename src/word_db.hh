@@ -3,7 +3,7 @@
 
 #include "buffer.hh"
 #include "shared_string.hh"
-#include "unordered_map.hh"
+#include "hash_map.hh"
 #include "vector.hh"
 #include "ranked_match.hh"
 
@@ -17,9 +17,9 @@ class WordDB : public OptionManagerWatcher
 {
 public:
     WordDB(const Buffer& buffer);
-    ~WordDB();
+    ~WordDB() override;
     WordDB(const WordDB&) = delete;
-    WordDB(WordDB&&);
+    WordDB(WordDB&&) noexcept;
 
     RankedMatchList find_matching(StringView str);
 
@@ -39,7 +39,7 @@ private:
         UsedLetters letters;
         int refcount;
     };
-    using WordToInfo = UnorderedMap<StringView, WordInfo, MemoryDomain::WordDB>;
+    using WordToInfo = HashMap<StringView, WordInfo, MemoryDomain::WordDB>;
     using Lines = Vector<StringDataPtr, MemoryDomain::WordDB>;
 
     SafePtr<const Buffer> m_buffer;

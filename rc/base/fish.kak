@@ -11,32 +11,32 @@ hook global BufCreate .*[.](fish) %{
 # Highlighters
 # ‾‾‾‾‾‾‾‾‾‾‾‾
 
-addhl -group / regions -default code fish \
+add-highlighter -group / regions -default code fish \
     double_string '"' (?<!\\)(\\\\)*"  '' \
     single_string "'" "'"              '' \
     comment       '#' '$'              ''
 
-addhl -group /fish/double_string fill string
-addhl -group /fish/double_string regex (\$\w+)|(\{\$\w+\}) 0:identifier
-addhl -group /fish/single_string fill string
-addhl -group /fish/comment       fill comment
+add-highlighter -group /fish/double_string fill string
+add-highlighter -group /fish/double_string regex (\$\w+)|(\{\$\w+\}) 0:variable
+add-highlighter -group /fish/single_string fill string
+add-highlighter -group /fish/comment       fill comment
 
-addhl -group /fish/code regex (\$\w+)|(\{\$\w+\}) 0:identifier
+add-highlighter -group /fish/code regex (\$\w+)|(\{\$\w+\}) 0:variable
 
 # Command names are collected using `builtin --names` and 'eval' from `functions --names`
-addhl -group /fish/code regex \b(and|begin|bg|bind|block|break|breakpoint|builtin|case|cd|command|commandline|complete|contains|continue|count|echo|else|emit|end|eval|exec|exit|fg|for|function|functions|history|if|jobs|not|or|printf|pwd|random|read|return|set|set_color|source|status|switch|test|ulimit|while)\b 0:keyword
+add-highlighter -group /fish/code regex \b(and|begin|bg|bind|block|break|breakpoint|builtin|case|cd|command|commandline|complete|contains|continue|count|echo|else|emit|end|eval|exec|exit|fg|for|function|functions|history|if|jobs|not|or|printf|pwd|random|read|return|set|set_color|source|status|switch|test|ulimit|while)\b 0:keyword
 
 # Commands
 # ‾‾‾‾‾‾‾‾
 
-def -hidden _fish_filter_around_selections %{
+def -hidden fish-filter-around-selections %{
     eval -no-hooks -draft -itersel %{
         # remove trailing white spaces
         try %{ exec -draft <a-x>s\h+$<ret>d }
     }
 }
 
-def -hidden _fish_indent_on_char %{
+def -hidden fish-indent-on-char %{
     eval -no-hooks -draft -itersel %{
         # align middle and end structures to start and indent when necessary
         try %{ exec -draft <a-x><a-k>^\h*(else)$<ret><a-\;><a-?>^\h*(if)<ret>s\A|\Z<ret>'<a-&> }
@@ -45,18 +45,18 @@ def -hidden _fish_indent_on_char %{
     }
 }
 
-def -hidden _fish_indent_on_new_line %{
+def -hidden fish-indent-on-new-line %{
     eval -no-hooks -draft -itersel %{
         # preserve previous line indent
         try %{ exec -draft <space>K<a-&> }
         # filter previous line
-        try %{ exec -draft k:_fish_filter_around_selections<ret> }
+        try %{ exec -draft k:fish-filter-around-selections<ret> }
         # indent after start structure
         try %{ exec -draft k<a-x><a-k>^\h*(begin|case|else|for|function|if|switch|while)\b<ret>j<a-gt> }
     }
 }
 
-def -hidden _fish_insert_on_new_line %{
+def -hidden fish-insert-on-new-line %{
     eval -no-hooks -draft -itersel %{
         # copy _#_ comment prefix and following white spaces
         try %{ exec -draft k<a-x>s^\h*\K#\h*<ret>yjp }
@@ -71,17 +71,17 @@ def -hidden _fish_insert_on_new_line %{
 # Initialization
 # ‾‾‾‾‾‾‾‾‾‾‾‾‾‾
 
-hook -group fish-highlight global WinSetOption filetype=fish %{ addhl ref fish }
+hook -group fish-highlight global WinSetOption filetype=fish %{ add-highlighter ref fish }
 
 hook global WinSetOption filetype=fish %{
-    hook window InsertChar .* -group fish-indent _fish_indent_on_char
-    hook window InsertChar \n -group fish-indent _fish_indent_on_new_line
-    hook window InsertChar \n -group fish-insert _fish_insert_on_new_line
+    hook window InsertChar .* -group fish-indent fish-indent-on-char
+    hook window InsertChar \n -group fish-insert fish-insert-on-new-line
+    hook window InsertChar \n -group fish-indent fish-indent-on-new-line
 }
 
-hook -group fish-highlight global WinSetOption filetype=(?!fish).* %{ rmhl fish }
+hook -group fish-highlight global WinSetOption filetype=(?!fish).* %{ remove-highlighter fish }
 
 hook global WinSetOption filetype=(?!fish).* %{
-    rmhooks window fish-indent
-    rmhooks window fish-insert
+    remove-hooks window fish-indent
+    remove-hooks window fish-insert
 }

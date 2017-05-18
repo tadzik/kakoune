@@ -3,7 +3,7 @@
 
 #include "safe_ptr.hh"
 #include "string.hh"
-#include "id_map.hh"
+#include "hash_map.hh"
 
 namespace Kakoune
 {
@@ -14,21 +14,16 @@ public:
     AliasRegistry(AliasRegistry& parent) : m_parent(&parent) {}
     void add_alias(String alias, String command);
     void remove_alias(StringView alias);
-    StringView operator[](StringView name) const;
-
-    using AliasMap = IdMap<String, MemoryDomain::Aliases>;
-    using iterator = AliasMap::const_iterator;
+    StringView operator[](StringView alias) const;
 
     Vector<StringView> aliases_for(StringView command) const;
-    using AliasDesc = std::pair<StringView, StringView>;
-    Vector<AliasDesc> flatten_aliases() const;
 
 private:
     friend class Scope;
     AliasRegistry() {}
 
     SafePtr<AliasRegistry> m_parent;
-    AliasMap m_aliases;
+    HashMap<String, String, MemoryDomain::Aliases> m_aliases;
 };
 
 }

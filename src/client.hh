@@ -30,7 +30,7 @@ public:
            SelectionList selections,
            EnvVarMap env_vars,
            String name);
-    ~Client();
+    ~Client() override;
 
     Client(Client&&) = delete;
 
@@ -41,7 +41,7 @@ public:
     void menu_hide();
 
     void info_show(String title, String content, BufferCoord anchor, InfoStyle style);
-    void info_hide();
+    void info_hide(bool even_modal = false);
 
     void print_status(DisplayLine status_line, bool immediate = false);
 
@@ -109,7 +109,7 @@ private:
         DisplayCoord ui_anchor;
         MenuStyle style;
         int selected;
-    } m_menu;
+    } m_menu{};
 
     struct Info
     {
@@ -118,7 +118,7 @@ private:
         BufferCoord anchor;
         DisplayCoord ui_anchor;
         InfoStyle style;
-    } m_info;
+    } m_info{};
 
     Vector<Key, MemoryDomain::Client> m_pending_keys;
 
@@ -134,7 +134,7 @@ enum class Autoreload
     Ask
 };
 
-constexpr Array<EnumDesc<Autoreload>, 5> enum_desc(Autoreload)
+constexpr Array<EnumDesc<Autoreload>, 5> enum_desc(Meta::Type<Autoreload>)
 {
     return { {
         { Autoreload::Yes, "yes" },

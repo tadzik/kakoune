@@ -9,8 +9,6 @@
 namespace Kakoune
 {
 
-template<> struct WithBitOps<RankedMatch::Flags> : std::true_type {};
-
 UsedLetters used_letters(StringView str)
 {
     UsedLetters res = 0;
@@ -57,7 +55,7 @@ static int count_word_boundaries_match(StringView candidate, StringView query)
         for (auto qit = query_it; qit != query.end(); ++qit)
         {
             const Codepoint qc = *qit;
-            if (qc == (islower(qc) ? lc  : c))
+            if (qc == (iswlower((wchar_t)qc) ? lc  : c))
             {
                 ++count;
                 query_it = qit+1;
@@ -72,17 +70,16 @@ static int count_word_boundaries_match(StringView candidate, StringView query)
 
 static bool smartcase_eq(Codepoint query, Codepoint candidate)
 {
-    return query == (islower(query) ? to_lower(candidate) : candidate);
+    return query == (iswlower((wchar_t)query) ? to_lower(candidate) : candidate);
 }
 
 struct SubseqRes
 {
-    bool matches;
     int max_index;
     bool single_word;
 };
 
-static SubseqRes subsequence_match_smart_case(StringView str, StringView subseq)
+static Optional<SubseqRes> subsequence_match_smart_case(StringView str, StringView subseq)
 {
     bool single_word = true;
     int max_index = -1;
@@ -91,7 +88,7 @@ static SubseqRes subsequence_match_smart_case(StringView str, StringView subseq)
     for (auto subseq_it = subseq.begin(); subseq_it != subseq.end();)
     {
         if (it == str.end())
-            return { false };
+            return {};
         const Codepoint c = utf8::read_codepoint(subseq_it, subseq.end());
         while (true)
         {
@@ -104,11 +101,11 @@ static SubseqRes subsequence_match_smart_case(StringView str, StringView subseq)
 
             ++index;
             if (it == str.end())
-                return { false };
+                return {};
         }
         max_index = index++;
     }
-    return { true, max_index, single_word };
+    return SubseqRes{max_index, single_word};
 }
 
 template<typename TestFunc>
@@ -127,13 +124,13 @@ RankedMatch::RankedMatch(StringView candidate, StringView query, TestFunc func)
         return;
 
     auto res = subsequence_match_smart_case(candidate, query);
-    if (not res.matches)
+    if (not res)
         return;
 
     m_candidate = candidate;
-    m_max_index = res.max_index;
+    m_max_index = res->max_index;
 
-    if (res.single_word)
+    if (res->single_word)
         m_flags |= Flags::SingleWord;
     if (smartcase_eq(query[0], candidate[0]))
         m_flags |= Flags::FirstCharMatch;
@@ -178,7 +175,8 @@ bool RankedMatch::operator<(const RankedMatch& other) const
     if (diff != Flags::None)
         return (int)(m_flags & diff) > (int)(other.m_flags & diff);
 
-    if (m_word_boundary_match_count != other.m_word_boundary_match_count)
+    if (not (m_flags & Flags::Prefix) and
+        m_word_boundary_match_count != other.m_word_boundary_match_count)
         return m_word_boundary_match_count > other.m_word_boundary_match_count;
 
     if (m_max_index != other.m_max_index)
@@ -186,6 +184,7 @@ bool RankedMatch::operator<(const RankedMatch& other) const
 
     auto it1 = m_candidate.begin(), it2 = other.m_candidate.begin();
     const auto end1 = m_candidate.end(), end2 = other.m_candidate.end();
+    auto last1 = it1, last2 = it2;
     while (true)
     {
         // find next mismatch
@@ -196,15 +195,17 @@ bool RankedMatch::operator<(const RankedMatch& other) const
             return it1 == end1 and it2 != end2;
 
         // compare codepoints
-        it1 = utf8::character_start(it1, m_candidate.begin());
-        it2 = utf8::character_start(it2, other.m_candidate.begin());
+        it1 = utf8::character_start(it1, last1);
+        it2 = utf8::character_start(it2, last2);
         const auto cp1 = utf8::read_codepoint(it1, end1);
-        const auto cp2 = utf8::read_codepoint(it2, end2);;
+        const auto cp2 = utf8::read_codepoint(it2, end2);
         if (cp1 != cp2)
         {
-            const bool low1 = islower(cp1), low2 = islower(cp2);
+            const bool low1 = iswlower((wchar_t)cp1);
+            const bool low2 = iswlower((wchar_t)cp2);
             return low1 == low2 ? cp1 < cp2 : low1;
         }
+        last1 = it1; last2 = it2;
     }
 }
 
@@ -221,6 +222,7 @@ UnitTest test_ranked_match{[] {
     kak_assert(RankedMatch{"foo/bar/foobar", "foobar"} < RankedMatch{"foo/bar/baz", "foobar"});
     kak_assert(RankedMatch{"delete-buffer", "db"} < RankedMatch{"debug", "db"});
     kak_assert(RankedMatch{"create_task", "ct"} < RankedMatch{"constructor", "ct"});
+    kak_assert(RankedMatch{"class", "cla"} < RankedMatch{"class::attr", "cla"});
 }};
 
 UnitTest test_used_letters{[]()

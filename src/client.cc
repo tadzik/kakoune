@@ -6,14 +6,18 @@
 #include "buffer_utils.hh"
 #include "file.hh"
 #include "remote.hh"
+#include "option.hh"
 #include "client_manager.hh"
 #include "command_manager.hh"
 #include "event_manager.hh"
 #include "user_interface.hh"
 #include "window.hh"
+#include "hash_map.hh"
 
-#include <signal.h>
+#include <csignal>
 #include <unistd.h>
+
+#include <utility>
 
 namespace Kakoune
 {
@@ -26,7 +30,7 @@ Client::Client(std::unique_ptr<UserInterface>&& ui,
     : m_ui{std::move(ui)}, m_window{std::move(window)},
       m_input_handler{std::move(selections), Context::Flags::None,
                       std::move(name)},
-      m_env_vars(env_vars)
+      m_env_vars(std::move(env_vars))
 {
     m_window->set_client(this);
 
@@ -53,6 +57,10 @@ Client::~Client()
 {
     m_window->options().unregister_watcher(*this);
     m_window->set_client(nullptr);
+    // Do not move the selections here, as we need them to be valid
+    // in order to correctly destroy the input handler
+    ClientManager::instance().add_free_window(std::move(m_window),
+                                              context().selections());
 }
 
 bool Client::process_pending_inputs()
@@ -79,6 +87,8 @@ bool Client::process_pending_inputs()
             }
             else
                 m_input_handler.handle_key(key);
+
+            context().hooks().run_hook("RawKey", key_to_str(key), context());
         }
         catch (Kakoune::runtime_error& error)
         {
@@ -108,38 +118,39 @@ DisplayCoord Client::dimensions() const
     return m_ui->dimensions();
 }
 
+String generate_context_info(const Context& context)
+{
+    String s = "";
+    if (context.buffer().is_modified())
+        s += "[+]";
+    if (context.client().input_handler().is_recording())
+        s += format("[recording ({})]", context.client().input_handler().recording_reg());
+    if (context.buffer().flags() & Buffer::Flags::New)
+        s += "[new file]";
+    if (context.hooks_disabled())
+        s += "[no-hooks]";
+    if (context.buffer().flags() & Buffer::Flags::Fifo)
+        s += "[fifo]";
+    return s;
+}
+
 DisplayLine Client::generate_mode_line() const
 {
     DisplayLine modeline;
     try
     {
         const String& modelinefmt = context().options()["modelinefmt"].get<String>();
-
-        modeline = parse_display_line(expand(modelinefmt, context(), ShellContext{},
-                                             [](String s) { return escape(s, '{', '\\'); }));
+        HashMap<String, DisplayLine> atoms{{ "mode_info", context().client().input_handler().mode_line() },
+                                           { "context_info", {generate_context_info(context()), get_face("Information")}}};
+        auto expanded = expand(modelinefmt, context(), ShellContext{},
+                               [](String s) { return escape(s, '{', '\\'); });
+        modeline = parse_display_line(expanded, atoms);
     }
     catch (runtime_error& err)
     {
         write_to_debug_buffer(format("Error while parsing modelinefmt: {}", err.what()));
         modeline.push_back({ "modelinefmt error, see *debug* buffer", get_face("Error") });
     }
-
-    Face info_face = get_face("Information");
-
-    if (context().buffer().is_modified())
-        modeline.push_back({ "[+]", info_face });
-    if (m_input_handler.is_recording())
-        modeline.push_back({ format("[recording ({})]", m_input_handler.recording_reg()), info_face });
-    if (context().buffer().flags() & Buffer::Flags::New)
-        modeline.push_back({ "[new file]", info_face });
-    if (context().hooks_disabled())
-        modeline.push_back({ "[no-hooks]", info_face });
-    if (context().buffer().flags() & Buffer::Flags::Fifo)
-        modeline.push_back({ "[fifo]", info_face });
-    modeline.push_back({ " " });
-    for (auto& atom : m_input_handler.mode_line())
-        modeline.push_back(std::move(atom));
-    modeline.push_back({ format(" - {}@[{}]", context().name(), Server::instance().session()) });
 
     return modeline;
 }
@@ -265,6 +276,8 @@ void Client::redraw_ifn()
 
     if (m_ui_pending & BufList)
         m_ui->draw_buflist(m_buflist, get_face("BufList"));
+    auto cursor = m_input_handler.get_cursor_info();
+    m_ui->set_cursor(cursor.first, cursor.second);
 
     m_ui->refresh(m_ui_pending | Refresh);
     m_ui_pending = 0;
@@ -318,7 +331,7 @@ void Client::close_buffer_reload_dialog()
 {
     kak_assert(m_buffer_reload_dialog_opened);
     m_buffer_reload_dialog_opened = false;
-    info_hide();
+    info_hide(true);
     m_input_handler.reset_normal_mode();
 }
 
@@ -342,7 +355,7 @@ void Client::check_if_buffer_needs_reloading()
         info_show(format("reload '{}' ?", bufname),
                   format("'{}' was modified externally\n"
                          "press <ret> or y to reload, <esc> or n to keep",
-                         bufname), {}, InfoStyle::Prompt);
+                         bufname), {}, InfoStyle::Modal);
 
         m_buffer_reload_dialog_opened = true;
         m_input_handler.on_next_key(KeymapMode::None, [this](Key key, Context&){ on_buffer_reload_key(key); });
@@ -391,13 +404,19 @@ void Client::menu_hide()
 
 void Client::info_show(String title, String content, BufferCoord anchor, InfoStyle style)
 {
+    if (m_info.style == InfoStyle::Modal) // We already have a modal info opened, do not touch it.
+        return;
+
     m_info = Info{ std::move(title), std::move(content), anchor, {}, style };
     m_ui_pending |= InfoShow;
     m_ui_pending &= ~InfoHide;
 }
 
-void Client::info_hide()
+void Client::info_hide(bool even_modal)
 {
+    if (not even_modal and m_info.style == InfoStyle::Modal)
+        return;
+
     m_info = Info{};
     m_ui_pending |= InfoHide;
     m_ui_pending &= ~InfoShow;

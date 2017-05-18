@@ -3,17 +3,18 @@
 #include "assert.hh"
 #include "buffer.hh"
 #include "exception.hh"
+#include "flags.hh"
 #include "ranked_match.hh"
 #include "regex.hh"
 #include "string.hh"
 #include "unicode.hh"
 
-#include <errno.h>
+#include <cerrno>
 #include <sys/mman.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <dirent.h>
-#include <stdlib.h>
+#include <cstdlib>
 #include <sys/select.h>
 
 #if defined(__FreeBSD__)
@@ -86,7 +87,7 @@ String real_path(StringView filename)
     char buffer[PATH_MAX+1];
 
     StringView existing = filename;
-    StringView non_existing;
+    StringView non_existing{};
 
     while (true)
     {
@@ -131,6 +132,15 @@ String compact_path(StringView filename)
     }
 
     return filename.str();
+}
+
+StringView tmpdir()
+{
+    StringView tmpdir = getenv("TMPDIR");
+    if (not tmpdir.empty())
+        return tmpdir.back() == '/' ? tmpdir.substr(0_byte, tmpdir.length()-1)
+                                    : tmpdir;
+    return "/tmp";
 }
 
 bool fd_readable(int fd)
@@ -268,10 +278,27 @@ void write_buffer_to_fd(Buffer& buffer, int fd)
     }
 }
 
-void write_buffer_to_file(Buffer& buffer, StringView filename)
+void write_buffer_to_file(Buffer& buffer, StringView filename, bool force)
 {
-    int fd = open(parse_filename(filename).c_str(),
-                  O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    struct stat st;
+    auto zfilename = filename.zstr();
+
+    if (force)
+    {
+        if (::stat(zfilename, &st) == 0)
+        {
+            if (::chmod(zfilename, st.st_mode | S_IWUSR) < 0)
+                throw runtime_error("couldn't change file permissions");
+        }
+        else
+            force = false;
+    }
+    auto restore_mode = on_scope_end([&]{
+        if (force and ::chmod(zfilename, st.st_mode) < 0)
+            throw runtime_error("couldn't restore file permissions");
+    });
+
+    int fd = open(zfilename, O_CREAT | O_WRONLY | O_TRUNC, 0644);
     if (fd == -1)
         throw file_access_error(filename, strerror(errno));
 
@@ -461,14 +488,14 @@ CandidateList complete_command(StringView prefix, ByteCount cursor_pos)
         return candidates(matches, dirname);
     }
 
-    typedef decltype(stat::st_mtim) TimeSpec;
+    using TimeSpec = decltype(stat::st_mtim);
 
     struct CommandCache
     {
         TimeSpec mtim = {};
         Vector<String> commands;
     };
-    static UnorderedMap<String, CommandCache, MemoryDomain::Commands> command_cache;
+    static HashMap<String, CommandCache, MemoryDomain::Commands> command_cache;
 
     Vector<RankedMatch> matches;
     for (auto dir : StringView{getenv("PATH")} | split<StringView>(':'))

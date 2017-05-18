@@ -11,17 +11,17 @@ hook global BufCreate .*[.](lua) %{
 # Highlighters
 # ‾‾‾‾‾‾‾‾‾‾‾‾
 
-addhl -group / regions -default code lua \
+add-highlighter -group / regions -default code lua \
     string  '"' (?<!\\)(\\\\)*"       '' \
     string  "'" (?<!\\)(\\\\)*'       '' \
     comment '--' '$'                  '' \
     comment '\Q--[[' ']]'             '' \
 
-addhl -group /lua/string fill string
+add-highlighter -group /lua/string fill string
 
-addhl -group /lua/comment fill comment
+add-highlighter -group /lua/comment fill comment
 
-addhl -group /lua/code regex \b(and|break|do|else|elseif|end|false|for|function|goto|if|in|local|nil|not|or|repeat|return|then|true|until|while)\b 0:keyword
+add-highlighter -group /lua/code regex \b(and|break|do|else|elseif|end|false|for|function|goto|if|in|local|nil|not|or|repeat|return|then|true|until|while)\b 0:keyword
 
 # Commands
 # ‾‾‾‾‾‾‾‾
@@ -51,14 +51,14 @@ def lua-alternative-file -docstring 'Jump to the alternate file (implementation 
     printf %s\\n "edit $altfile"
 }}
 
-def -hidden _lua_filter_around_selections %{
+def -hidden lua-filter-around-selections %{
     eval -no-hooks -draft -itersel %{
         # remove trailing white spaces
         try %{ exec -draft <a-x>s\h+$<ret>d }
     }
 }
 
-def -hidden _lua_indent_on_char %{
+def -hidden lua-indent-on-char %{
     eval -no-hooks -draft -itersel %{
         # align middle and end structures to start and indent when necessary, elseif is already covered by else
         try %{ exec -draft <a-x><a-k>^\h*(else)$<ret><a-\;><a-?>^\h*(if)<ret>s\A|\Z<ret>'<a-&> }
@@ -66,18 +66,18 @@ def -hidden _lua_indent_on_char %{
     }
 }
 
-def -hidden _lua_indent_on_new_line %{
+def -hidden lua-indent-on-new-line %{
     eval -no-hooks -draft -itersel %{
         # preserve previous line indent
         try %{ exec -draft <space>K<a-&> }
         # filter previous line
-        try %{ exec -draft k:_lua_filter_around_selections<ret> }
+        try %{ exec -draft k:lua-filter-around-selections<ret> }
         # indent after start structure
         try %{ exec -draft k<a-x><a-k>^\h*(else|elseif|for|function|if|while)\b<ret>j<a-gt> }
     }
 }
 
-def -hidden _lua_insert_on_new_line %{
+def -hidden lua-insert-on-new-line %{
     eval -no-hooks -draft -itersel %{
         # copy -- comment prefix and following white spaces
         try %{ exec -draft k<a-x>s^\h*\K--\h*<ret>yjp }
@@ -92,21 +92,21 @@ def -hidden _lua_insert_on_new_line %{
 # Initialization
 # ‾‾‾‾‾‾‾‾‾‾‾‾‾‾
 
-hook -group lua-highlight global WinSetOption filetype=lua %{ addhl ref lua }
+hook -group lua-highlight global WinSetOption filetype=lua %{ add-highlighter ref lua }
 
 hook global WinSetOption filetype=lua %{
-    hook window InsertChar .* -group lua-indent _lua_indent_on_char
-    hook window InsertChar \n -group lua-indent _lua_indent_on_new_line
-    hook window InsertChar \n -group lua-insert _lua_insert_on_new_line
+    hook window InsertChar .* -group lua-indent lua-indent-on-char
+    hook window InsertChar \n -group lua-insert lua-insert-on-new-line
+    hook window InsertChar \n -group lua-indent lua-indent-on-new-line
 
     alias window alt lua-alternative-file
 }
 
-hook -group lua-highlight global WinSetOption filetype=(?!lua).* %{ rmhl lua }
+hook -group lua-highlight global WinSetOption filetype=(?!lua).* %{ remove-highlighter lua }
 
 hook global WinSetOption filetype=(?!lua).* %{
-    rmhooks window lua-indent
-    rmhooks window lua-insert
+    remove-hooks window lua-indent
+    remove-hooks window lua-insert
 
     unalias window alt lua-alternative-file
 }

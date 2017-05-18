@@ -16,10 +16,12 @@ class Window : public SafeCountable, public OptionManagerWatcher, public Scope
 {
 public:
     Window(Buffer& buffer);
-    ~Window();
+    ~Window() override;
 
     const DisplayCoord& position() const { return m_position; }
     void set_position(DisplayCoord position);
+
+    const DisplayCoord& range() const { return m_range; }
 
     const DisplayCoord& dimensions() const { return m_dimensions; }
     void set_dimensions(DisplayCoord dimensions);
@@ -44,9 +46,6 @@ public:
     bool needs_redraw(const Context& context) const;
     void force_redraw() { m_last_setup = Setup{}; }
 
-    BufferCoord offset_coord(BufferCoord coord, CharCount offset);
-    BufferCoordAndTarget offset_coord(BufferCoordAndTarget coord, LineCount offset);
-
     void set_client(Client* client) { m_client = client; }
 
     void clear_display_buffer();
@@ -54,7 +53,7 @@ private:
     Window(const Window&) = delete;
 
     void on_option_changed(const Option& option) override;
-    void scroll_to_keep_selection_visible_ifn(const Context& context);
+    void compute_display_setup(const Context& context);
 
     void run_hook_in_own_context(StringView hook_name, StringView param,
                                  String client_name = "");
@@ -63,6 +62,7 @@ private:
     SafePtr<Client> m_client;
 
     DisplayCoord m_position;
+    DisplayCoord m_range;
     DisplayCoord m_dimensions;
     DisplayBuffer m_display_buffer;
 

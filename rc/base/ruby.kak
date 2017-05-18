@@ -11,7 +11,7 @@ hook global BufCreate .*(([.](rb))|(irbrc)|(pryrc)|(Capfile|[.]cap)|(Gemfile)|(G
 # Highlighters
 # ‾‾‾‾‾‾‾‾‾‾‾‾
 
-addhl -group / regions -default code ruby       \
+add-highlighter -group / regions -default code ruby       \
     double_string '"' (?<!\\)(\\\\)*"        '' \
     single_string "'" (?<!\\)(\\\\)*'        '' \
     backtick      '`' (?<!\\)(\\\\)*`        '' \
@@ -27,25 +27,25 @@ addhl -group / regions -default code ruby       \
 # Regular expression flags are: i → ignore case, m → multi-lines, o → only interpolate #{} blocks once, x → extended mode (ignore white spaces)
 # Literals are: i → array of symbols, q → string, r → regular expression, s → symbol, w → array of words, x → capture shell result
 
-addhl -group /ruby/double_string fill string
-addhl -group /ruby/double_string regions regions interpolation \Q#{ \} \{
-addhl -group /ruby/double_string/regions/interpolation fill meta
+add-highlighter -group /ruby/double_string fill string
+add-highlighter -group /ruby/double_string regions regions interpolation \Q#{ \} \{
+add-highlighter -group /ruby/double_string/regions/interpolation fill meta
 
-addhl -group /ruby/single_string fill string
+add-highlighter -group /ruby/single_string fill string
 
-addhl -group /ruby/backtick fill meta
-addhl -group /ruby/backtick regions regions interpolation \Q#{ \} \{
-addhl -group /ruby/backtick/regions/interpolation fill meta
+add-highlighter -group /ruby/backtick fill meta
+add-highlighter -group /ruby/backtick regions regions interpolation \Q#{ \} \{
+add-highlighter -group /ruby/backtick/regions/interpolation fill meta
 
-addhl -group /ruby/regex fill meta
-addhl -group /ruby/regex regions regions interpolation \Q#{ \} \{
-addhl -group /ruby/regex/regions/interpolation fill meta
+add-highlighter -group /ruby/regex fill meta
+add-highlighter -group /ruby/regex regions regions interpolation \Q#{ \} \{
+add-highlighter -group /ruby/regex/regions/interpolation fill meta
 
-addhl -group /ruby/comment fill comment
+add-highlighter -group /ruby/comment fill comment
 
-addhl -group /ruby/literal fill meta
+add-highlighter -group /ruby/literal fill meta
 
-addhl -group /ruby/code regex \b([A-Za-z]\w*:(?=[^:]))|([$@][A-Za-z]\w*)|((?<=[^:]):[A-Za-z]\w*[=?!]?)|([A-Z]\w*|^|\h)\K::(?=[A-Z]) 0:identifier
+add-highlighter -group /ruby/code regex \b([A-Za-z]\w*:(?=[^:]))|([$@][A-Za-z]\w*)|((?<=[^:]):(([A-Za-z]\w*[=?!]?)|(\[\]=?)))|([A-Z]\w*|^|\h)\K::(?=[A-Z]) 0:variable
 
 %sh{
     # Grammar
@@ -56,7 +56,7 @@ addhl -group /ruby/code regex \b([A-Za-z]\w*:(?=[^:]))|([$@][A-Za-z]\w*)|((?<=[^
     keywords="${keywords}|rescue|retry|return|self|super|then|true|undef|unless|until|when|while|yield"
     attributes="attr_reader|attr_writer|attr_accessor"
     values="false|true|nil"
-    meta="require|include"
+    meta="require|include|extend"
 
     # Add the language's grammar to the static completion list
     printf %s\\n "hook global WinSetOption filetype=ruby %{
@@ -65,10 +65,10 @@ addhl -group /ruby/code regex \b([A-Za-z]\w*:(?=[^:]))|([$@][A-Za-z]\w*)|((?<=[^
 
     # Highlight keywords
     printf %s "
-        addhl -group /ruby/code regex \b(${keywords})\b 0:keyword
-        addhl -group /ruby/code regex \b(${attributes})\b 0:attribute
-        addhl -group /ruby/code regex \b(${values})\b 0:value
-        addhl -group /ruby/code regex \b(${meta})\b 0:meta
+        add-highlighter -group /ruby/code regex \b(${keywords})\b 0:keyword
+        add-highlighter -group /ruby/code regex \b(${attributes})\b 0:attribute
+        add-highlighter -group /ruby/code regex \b(${values})\b 0:value
+        add-highlighter -group /ruby/code regex \b(${meta})\b 0:meta
     "
 }
 
@@ -100,7 +100,7 @@ def ruby-alternative-file -docstring 'Jump to the alternate file (implementation
     echo "edit $altfile"
 }}
 
-def -hidden _ruby_filter_around_selections %{
+def -hidden ruby-filter-around-selections %{
     eval -no-hooks -draft -itersel %{
         exec <a-x>
         # remove trailing white spaces
@@ -108,7 +108,7 @@ def -hidden _ruby_filter_around_selections %{
     }
 }
 
-def -hidden _ruby_indent_on_char %{
+def -hidden ruby-indent-on-char %{
     eval -no-hooks -draft -itersel %{
         # align middle and end structures to start
         try %{ exec -draft <a-x> <a-k> ^ \h * (else|elsif) $ <ret> <a-\;> <a-?> ^ \h * (if)                                                       <ret> s \A | \Z <ret> \' <a-&> }
@@ -118,25 +118,25 @@ def -hidden _ruby_indent_on_char %{
     }
 }
 
-def -hidden _ruby_indent_on_new_line %{
+def -hidden ruby-indent-on-new-line %{
     eval -no-hooks -draft -itersel %{
         # preserve previous line indent
         try %{ exec -draft K <a-&> }
         # filter previous line
-        try %{ exec -draft k : _ruby_filter_around_selections <ret> }
+        try %{ exec -draft k : ruby-filter-around-selections <ret> }
         # indent after start structure
-        try %{ exec -draft k x <a-k> ^ \h * (begin|case|class|def|do|else|elsif|ensure|for|if|module|rescue|unless|until|when|while) \b <ret> j <a-gt> }
+        try %{ exec -draft k <a-x> <a-k> ^ \h * (begin|case|class|def|do|else|elsif|ensure|for|if|module|rescue|unless|until|when|while) \b <ret> j <a-gt> }
     }
 }
 
-def -hidden _ruby_insert_on_new_line %{
+def -hidden ruby-insert-on-new-line %{
     eval -no-hooks -draft -itersel %{
         # copy _#_ comment prefix and following white spaces
-        try %{ exec -draft k x s ^ \h * \K \# \h * <ret> y j p }
+        try %{ exec -draft k <a-x> s ^ \h * \K \# \h * <ret> y gh j P }
         # wisely add end structure
         eval -save-regs x %{
-            try %{ exec -draft k x s ^ \h + <ret> \" x y } catch %{ reg x '' }
-            try %{ exec -draft k x <a-k> ^ <c-r> x (begin|case|class|def|do|for|if|module|unless|until|while) <ret> j <a-a> i X <a-\;> K <a-K> ^ <c-r> x (begin|case|class|def|do|for|if|module|unless|until|while) . * \n <c-r> x end $ <ret> j x y p j a end <esc> <a-lt> }
+            try %{ exec -draft k <a-x> s ^ \h + <ret> \" x y } catch %{ reg x '' }
+            try %{ exec -draft k <a-x> <a-k> ^ <c-r> x (begin|case|class|def|do|for|if|module|unless|until|while) <ret> j <a-a> i X <a-\;> K <a-K> ^ <c-r> x (begin|case|class|def|do|for|if|module|unless|until|while) . * \n <c-r> x end $ <ret> j x y p j a end <esc> <a-lt> }
         }
     }
 }
@@ -144,21 +144,21 @@ def -hidden _ruby_insert_on_new_line %{
 # Initialization
 # ‾‾‾‾‾‾‾‾‾‾‾‾‾‾
 
-hook -group ruby-highlight global WinSetOption filetype=ruby %{ addhl ref ruby }
+hook -group ruby-highlight global WinSetOption filetype=ruby %{ add-highlighter ref ruby }
 
 hook global WinSetOption filetype=ruby %{
-    hook window InsertChar .* -group ruby-indent _ruby_indent_on_char
-    hook window InsertChar \n -group ruby-indent _ruby_indent_on_new_line
-    hook window InsertChar \n -group ruby-insert _ruby_insert_on_new_line
+    hook window InsertChar .* -group ruby-indent ruby-indent-on-char
+    hook window InsertChar \n -group ruby-insert ruby-insert-on-new-line
+    hook window InsertChar \n -group ruby-indent ruby-indent-on-new-line
 
     alias window alt ruby-alternative-file
 }
 
-hook -group ruby-highlight global WinSetOption filetype=(?!ruby).* %{ rmhl ruby }
+hook -group ruby-highlight global WinSetOption filetype=(?!ruby).* %{ remove-highlighter ruby }
 
 hook global WinSetOption filetype=(?!ruby).* %{
-    rmhooks window ruby-indent
-    rmhooks window ruby-insert
+    remove-hooks window ruby-indent
+    remove-hooks window ruby-insert
 
     unalias window alt ruby-alternative-file
 }

@@ -1,7 +1,8 @@
 #include "selection.hh"
 
-#include "utf8.hh"
 #include "buffer_utils.hh"
+#include "changes.hh"
+#include "utf8.hh"
 
 namespace Kakoune
 {
@@ -34,6 +35,23 @@ SelectionList::SelectionList(Buffer& buffer, Vector<Selection> s, size_t timesta
 
 SelectionList::SelectionList(Buffer& buffer, Vector<Selection> s)
     : SelectionList(buffer, std::move(s), buffer.timestamp()) {}
+
+void SelectionList::remove(size_t index)
+{
+    m_selections.erase(begin() + index);
+    if (index < m_main or m_main == m_selections.size())
+        --m_main;
+}
+void SelectionList::set(Vector<Selection> list, size_t main)
+{
+    kak_assert(main < list.size());
+    m_selections = std::move(list);
+    m_main = main;
+    sort_and_merge_overlapping();
+    update_timestamp();
+    check_invariant();
+}
+
 
 namespace
 {
@@ -96,164 +114,10 @@ Iterator merge_overlapping(Iterator begin, Iterator end, size_t& main, OverlapsF
     return begin + i + 1;
 }
 
-// This tracks position changes for changes that are done
-// in a forward way (each change takes place at a position)
-// *after* the previous one.
-struct ForwardChangesTracker
-{
-    BufferCoord cur_pos; // last change position at current modification
-    BufferCoord old_pos; // last change position at start
-
-    void update(const Buffer::Change& change)
-    {
-        kak_assert(change.begin >= cur_pos);
-
-        if (change.type == Buffer::Change::Insert)
-        {
-            old_pos = get_old_coord(change.begin);
-            cur_pos = change.end;
-        }
-        else if (change.type == Buffer::Change::Erase)
-        {
-            old_pos = get_old_coord(change.end);
-            cur_pos = change.begin;
-        }
-    }
-
-    void update(const Buffer& buffer, size_t& timestamp)
-    {
-        for (auto& change : buffer.changes_since(timestamp))
-            update(change);
-        timestamp = buffer.timestamp();
-    }
-
-    BufferCoord get_old_coord(BufferCoord coord) const
-    {
-        kak_assert(cur_pos <= coord);
-        auto pos_change = cur_pos - old_pos;
-        if (cur_pos.line == coord.line)
-        {
-            kak_assert(pos_change.column <= coord.column);
-            coord.column -= pos_change.column;
-        }
-        coord.line -= pos_change.line;
-        kak_assert(old_pos <= coord);
-        return coord;
-    }
-
-    BufferCoord get_new_coord(BufferCoord coord) const
-    {
-        kak_assert(old_pos <= coord);
-        auto pos_change = cur_pos - old_pos;
-        if (old_pos.line == coord.line)
-        {
-            kak_assert(-pos_change.column <= coord.column);
-            coord.column += pos_change.column;
-        }
-        coord.line += pos_change.line;
-        kak_assert(cur_pos <= coord);
-        return coord;
-    }
-
-    BufferCoord get_new_coord_tolerant(BufferCoord coord) const
-    {
-        if (coord < old_pos)
-            return cur_pos;
-        return get_new_coord(coord);
-    }
-
-    bool relevant(const Buffer::Change& change, BufferCoord old_coord) const
-    {
-        auto new_coord = get_new_coord_tolerant(old_coord);
-        return change.type == Buffer::Change::Insert ? change.begin <= new_coord
-                                                     : change.begin < new_coord;
-    }
-};
-
-const Buffer::Change* forward_sorted_until(const Buffer::Change* first, const Buffer::Change* last)
-{
-    if (first != last) {
-        const Buffer::Change* next = first;
-        while (++next != last) {
-            const auto& ref = first->type == Buffer::Change::Insert ? first->end : first->begin;
-            if (next->begin <= ref)
-                return next;
-            first = next;
-        }
-    }
-    return last;
 }
 
-const Buffer::Change* backward_sorted_until(const Buffer::Change* first, const Buffer::Change* last)
-{
-    if (first != last) {
-        const Buffer::Change* next = first;
-        while (++next != last) {
-            if (first->begin <= next->end)
-                return next;
-            first = next;
-        }
-    }
-    return last;
-}
-
-void update_forward(ConstArrayView<Buffer::Change> changes, Vector<Selection>& selections)
-{
-    ForwardChangesTracker changes_tracker;
-
-    auto change_it = changes.begin();
-    auto advance_while_relevant = [&](const BufferCoord& pos) mutable {
-        while (change_it != changes.end() and changes_tracker.relevant(*change_it, pos))
-            changes_tracker.update(*change_it++);
-    };
-
-    for (auto& sel : selections)
-    {
-        auto& sel_min = sel.min();
-        auto& sel_max = sel.max();
-        advance_while_relevant(sel_min);
-        sel_min = changes_tracker.get_new_coord_tolerant(sel_min);
-
-        advance_while_relevant(sel_max);
-        sel_max = changes_tracker.get_new_coord_tolerant(sel_max);
-    }
-    kak_assert(std::is_sorted(selections.begin(), selections.end(), compare_selections));
-}
-
-void update_backward(ConstArrayView<Buffer::Change> changes, Vector<Selection>& selections)
-{
-    ForwardChangesTracker changes_tracker;
-
-    using ReverseIt = std::reverse_iterator<const Buffer::Change*>;
-    auto change_it = ReverseIt(changes.end());
-    auto change_end = ReverseIt(changes.begin());
-    auto advance_while_relevant = [&](const BufferCoord& pos) mutable {
-        while (change_it != change_end)
-        {
-            auto change = *change_it;
-            change.begin = changes_tracker.get_new_coord(change.begin);
-            change.end = changes_tracker.get_new_coord(change.end);
-            if (not changes_tracker.relevant(change, pos))
-                break;
-            changes_tracker.update(change);
-            ++change_it;
-        }
-    };
-
-    for (auto& sel : selections)
-    {
-        auto& sel_min = sel.min();
-        auto& sel_max = sel.max();
-        advance_while_relevant(sel_min);
-        sel_min = changes_tracker.get_new_coord_tolerant(sel_min);
-
-        advance_while_relevant(sel_max);
-        sel_max = changes_tracker.get_new_coord_tolerant(sel_max);
-    }
-    kak_assert(std::is_sorted(selections.begin(), selections.end(), compare_selections));
-}
-
-}
+BufferCoord& get_first(Selection& sel) { return sel.min(); }
+BufferCoord& get_last(Selection& sel) { return sel.max(); }
 
 Vector<Selection> compute_modified_ranges(Buffer& buffer, size_t timestamp)
 {
@@ -277,9 +141,9 @@ Vector<Selection> compute_modified_ranges(Buffer& buffer, size_t timestamp)
             for (; change_it != forward_end; ++change_it)
             {
                 if (change_it->type == Buffer::Change::Insert)
-                    ranges.push_back({ change_it->begin, change_it->end });
+                    ranges.emplace_back(change_it->begin, change_it->end);
                 else
-                    ranges.push_back({ change_it->begin });
+                    ranges.emplace_back(change_it->begin);
                 changes_tracker.update(*change_it);
             }
         }
@@ -298,9 +162,9 @@ Vector<Selection> compute_modified_ranges(Buffer& buffer, size_t timestamp)
                 change.end = changes_tracker.get_new_coord(change.end);
 
                 if (change.type == Buffer::Change::Insert)
-                    ranges.push_back({ change.begin, change.end });
+                    ranges.emplace_back(change.begin, change.end);
                 else
-                    ranges.push_back({ change.begin });
+                    ranges.emplace_back(change.begin);
                 changes_tracker.update(change);
             }
             change_it = backward_end;
@@ -367,11 +231,11 @@ void update_selections(Vector<Selection>& selections, size_t& main, Buffer& buff
             update_backward({ change_it, backward_end }, selections);
             change_it = backward_end;
         }
+        kak_assert(std::is_sorted(selections.begin(), selections.end(),
+                                  compare_selections));
         selections.erase(
             merge_overlapping(selections.begin(), selections.end(),
                               main, overlaps), selections.end());
-        kak_assert(std::is_sorted(selections.begin(), selections.end(),
-                                  compare_selections));
     }
     for (auto& sel : selections)
         clamp(sel, buffer);
@@ -481,7 +345,8 @@ void SelectionList::avoid_eol()
     }
 }
 
-BufferCoord prepare_insert(Buffer& buffer, const Selection& sel, InsertMode mode)
+BufferCoord get_insert_pos(const Buffer& buffer, const Selection& sel,
+                           InsertMode mode)
 {
     switch (mode)
     {
@@ -489,8 +354,6 @@ BufferCoord prepare_insert(Buffer& buffer, const Selection& sel, InsertMode mode
         return sel.min();
     case InsertMode::InsertCursor:
         return sel.cursor();
-    case InsertMode::Replace:
-        return {}; // replace is handled specially, by calling Buffer::replace
     case InsertMode::Append:
     {
         // special case for end of lines, append to current line instead
@@ -503,65 +366,65 @@ BufferCoord prepare_insert(Buffer& buffer, const Selection& sel, InsertMode mode
         return {sel.max().line, buffer[sel.max().line].length() - 1};
     case InsertMode::InsertAtNextLineBegin:
         return sel.max().line+1;
-    case InsertMode::OpenLineBelow:
-        return buffer.insert(sel.max().line + 1, "\n");
-    case InsertMode::OpenLineAbove:
-        return buffer.insert(sel.min().line, "\n");
+    default:
+        kak_assert(false);
+        return {};
     }
-    kak_assert(false);
-    return {};
 }
 
 void SelectionList::insert(ConstArrayView<String> strings, InsertMode mode,
-                           bool select_inserted)
+                           Vector<BufferCoord>* out_insert_pos)
 {
     if (strings.empty())
         return;
 
     update();
+
+    Vector<BufferCoord> insert_pos;
+    if (mode != InsertMode::Replace)
+    {
+        for (auto& sel : m_selections)
+            insert_pos.push_back(get_insert_pos(*m_buffer, sel, mode));
+    }
+
     ForwardChangesTracker changes_tracker;
     for (size_t index = 0; index < m_selections.size(); ++index)
     {
         auto& sel = m_selections[index];
 
-        sel.anchor() = changes_tracker.get_new_coord(sel.anchor());
-        kak_assert(m_buffer->is_valid(sel.anchor()));
-        sel.cursor() = changes_tracker.get_new_coord(sel.cursor());
-        kak_assert(m_buffer->is_valid(sel.cursor()));
-
-        auto pos = prepare_insert(*m_buffer, sel, mode);
-        changes_tracker.update(*m_buffer, m_timestamp);
+        sel.anchor() = changes_tracker.get_new_coord_tolerant(sel.anchor());
+        sel.cursor() = changes_tracker.get_new_coord_tolerant(sel.cursor());
+        kak_assert(m_buffer->is_valid(sel.anchor()) and
+                   m_buffer->is_valid(sel.cursor()));
 
         const String& str = strings[std::min(index, strings.size()-1)];
 
-        if (mode == InsertMode::Replace)
-            pos = replace(*m_buffer, sel, str);
-        else
-            pos = m_buffer->insert(pos, str);
+        const auto pos = (mode == InsertMode::Replace) ?
+            replace(*m_buffer, sel, str)
+          : m_buffer->insert(changes_tracker.get_new_coord(insert_pos[index]), str);
 
-        auto& change = m_buffer->changes_since(m_timestamp).back();
         changes_tracker.update(*m_buffer, m_timestamp);
-        m_timestamp = m_buffer->timestamp();
 
-        if (select_inserted or mode == InsertMode::Replace)
+        if (out_insert_pos)
+            out_insert_pos->push_back(pos);
+
+        if (mode == InsertMode::Replace)
         {
             if (str.empty())
-            {
                 sel.anchor() = sel.cursor() = m_buffer->clamp(pos);
-                continue;
+            else
+            {
+                // we want min and max from *before* we do any change
+                auto& min = sel.min();
+                auto& max = sel.max();
+                auto& change = m_buffer->changes_since(0).back();
+                min = change.begin;
+                max = m_buffer->char_prev(change.end);
             }
-
-            // we want min and max from *before* we do any change
-            auto& min = sel.min();
-            auto& max = sel.max();
-            min = change.begin;
-            max = m_buffer->char_prev(change.end);
         }
-        else
+        else if (not str.empty())
         {
-            if (str.empty())
-                continue;
-
+            auto& change = m_buffer->changes_since(0).back();
             sel.anchor() = m_buffer->clamp(update_insert(sel.anchor(), change.begin, change.end));
             sel.cursor() = m_buffer->clamp(update_insert(sel.cursor(), change.begin, change.end));
         }

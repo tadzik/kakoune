@@ -1,6 +1,5 @@
 debug ?= yes
 static ?= no
-pedantic ?= yes
 
 ifeq ($(debug),yes)
     CPPFLAGS += -DKAK_DEBUG
@@ -12,10 +11,6 @@ else
     else
         $(error debug should be either yes or no)
     endif
-endif
-
-ifeq ($(pedantic),yes)
-    CXXFLAGS += -pedantic
 endif
 
 sources := $(wildcard *.cc)
@@ -38,8 +33,8 @@ os := $(shell uname)
 
 ifeq ($(os),Darwin)
     LIBS += -lncurses -lboost_regex-mt
-    CPPFLAGS += -I/usr/local/opt/ncurses/include
-    LDFLAGS += -L/usr/local/opt/ncurses/lib
+    CPPFLAGS += -I$(PREFIX)/opt/ncurses/include -I$(PREFIX)/opt/boost/include -I/opt/local/include
+    LDFLAGS += -L$(PREFIX)/opt/ncurses/lib -L$(PREFIX)/opt/boost/lib -L/opt/local/lib
 else ifeq ($(os),FreeBSD)
     LIBS += -ltinfow -lncursesw -lboost_regex
     CPPFLAGS += -I/usr/local/include
@@ -64,10 +59,14 @@ ifeq ($(static),yes)
     LDFLAGS += -static -pthread
 endif
 
-CXXFLAGS += -std=gnu++11 -g -Wall -Wno-reorder -Wno-sign-compare -Wno-address
+CXXFLAGS += -pedantic -std=gnu++11 -g -Wall -Wextra -Wno-unused-parameter -Wno-reorder -Wno-sign-compare -Wno-address
 
 all : kak
-kak : $(objects)
+
+kak : kak$(suffix)
+	ln -sf $< $@
+
+kak$(suffix) : $(objects)
 	$(CXX) $(LDFLAGS) $(CXXFLAGS) $(objects) $(LIBS) -o $@
 
 -include $(deps)
@@ -104,37 +103,38 @@ clean:
 	rm -f .*.o .*.d
 
 distclean: clean
-	rm -f kak
+	rm -f kak kak$(suffix)
+	find ../doc -type f -name \*\\.gz -exec rm -f '{}' +
 
 installdirs:
-	install	-d $(bindir) \
-		$(sharedir)/rc/base	\
-		$(sharedir)/rc/core	\
+	install -d $(bindir) \
+		$(sharedir)/rc/base \
+		$(sharedir)/rc/core \
 		$(sharedir)/rc/extra \
 		$(sharedir)/colors \
 		$(docdir)/manpages \
 		$(mandir)
 
 install: kak man doc installdirs
-	install	-m 0755	kak	$(bindir)
-	install	-m 0644	../share/kak/kakrc $(sharedir)
-	install	-m 0644	../rc/base/* $(sharedir)/rc/base
-	install	-m 0644	../rc/core/* $(sharedir)/rc/core
-	install	-m 0644	../rc/extra/* $(sharedir)/rc/extra
-	[ -e $(sharedir)/autoload ]	|| ln -s rc	$(sharedir)/autoload
-	install	-m 0644	../colors/*	$(sharedir)/colors
-	install	-m 0644	../README.asciidoc $(docdir)
-	install	-m 0644	../doc/manpages/*.gz $(docdir)/manpages
-	install	-m 0644	../doc/kak.1.gz	$(mandir)
+	install -m 0755 kak $(bindir)
+	install -m 0644 ../share/kak/kakrc $(sharedir)
+	install -m 0644 ../rc/base/* $(sharedir)/rc/base
+	install -m 0644 ../rc/core/* $(sharedir)/rc/core
+	install -m 0644 ../rc/extra/* $(sharedir)/rc/extra
+	[ -e $(sharedir)/autoload ] || ln -s rc $(sharedir)/autoload
+	install -m 0644 ../colors/* $(sharedir)/colors
+	install -m 0644 ../README.asciidoc $(docdir)
+	install -m 0644 ../doc/manpages/*.gz $(docdir)/manpages
+	install -m 0644 ../doc/kak.1.gz $(mandir)
 
 install-strip: install
 	strip -s $(bindir)/kak
 
 uninstall:
 	rm -rf $(bindir)/kak \
-		$(sharedir)	\
+		$(sharedir) \
 		$(docdir) \
 		$(mandir)/kak.1.gz
 
 .PHONY: check TAGS clean distclean installdirs install install-strip uninstall
-.PHONY: tags test man doc
+.PHONY: tags test man doc kak

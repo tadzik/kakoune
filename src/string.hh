@@ -8,7 +8,7 @@
 #include "utf8.hh"
 #include "vector.hh"
 
-#include <string.h>
+#include <cstring>
 #include <climits>
 
 namespace Kakoune
@@ -121,6 +121,8 @@ public:
     }
     String(const char* begin, const char* end) : m_data(begin, end-begin) {}
 
+    explicit String(StringView str);
+
     [[gnu::always_inline]]
     char* data() { return m_data.data(); }
 
@@ -211,7 +213,7 @@ private:
 class StringView : public StringOps<StringView, const char>
 {
 public:
-    constexpr StringView() = default;
+    StringView() = default;
     constexpr StringView(const char* data, ByteCount length)
         : m_data{data}, m_length{length} {}
     constexpr StringView(const char* data) : m_data{data}, m_length{data ? strlen(data) : 0} {}
@@ -248,9 +250,15 @@ public:
     ZeroTerminatedString zstr() const { return {begin(), end()}; }
 
 private:
-    const char* m_data = nullptr;
-    ByteCount m_length = 0;
+    const char* m_data;
+    ByteCount m_length;
 };
+
+static_assert(std::is_trivial<StringView>::value, "");
+
+template<> struct HashCompatible<String, StringView> : std::true_type {};
+
+inline String::String(StringView str) : String{str.begin(), str.length()} {}
 
 template<typename Type, typename CharType>
 inline StringView StringOps<Type, CharType>::substr(ByteCount from, ByteCount length) const
@@ -315,6 +323,11 @@ inline bool operator<(const StringView& lhs, const StringView& rhs)
 inline String operator"" _str(const char* str, size_t)
 {
     return String(str);
+}
+
+inline StringView operator"" _sv(const char* str, size_t)
+{
+    return StringView{str};
 }
 
 Vector<String> split(StringView str, char separator, char escape);

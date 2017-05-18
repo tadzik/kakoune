@@ -1,6 +1,6 @@
 #include "assert.hh"
-#include "buffer.hh"
 #include "backtrace.hh"
+#include "buffer.hh"
 #include "buffer_manager.hh"
 #include "buffer_utils.hh"
 #include "client_manager.hh"
@@ -13,14 +13,15 @@
 #include "file.hh"
 #include "highlighters.hh"
 #include "insert_completer.hh"
-#include "shared_string.hh"
-#include "ncurses_ui.hh"
 #include "json_ui.hh"
+#include "ncurses_ui.hh"
+#include "option_types.hh"
 #include "parameters_parser.hh"
+#include "regex.hh"
 #include "register_manager.hh"
 #include "remote.hh"
-#include "regex.hh"
 #include "scope.hh"
+#include "shared_string.hh"
 #include "shell_manager.hh"
 #include "string.hh"
 #include "unit_tests.hh"
@@ -33,11 +34,23 @@
 #include <unistd.h>
 #include <pwd.h>
 
-using namespace Kakoune;
-
-struct startup_error : Kakoune::runtime_error
+namespace Kakoune
 {
-    using Kakoune::runtime_error::runtime_error;
+
+static const char* startup_info =
+"Kakoune recent breaking changes:\n"
+" * <a-'> (rotate selection contents) is now <a-\">,\n"
+"   <a-'> is rotate selections backwards.\n"
+" * The `identifier` face has been replaced with `variable`,\n"
+"   `function` and `module`, update your custom colorschemes\n"
+" * BufNew and BufOpen hooks have been renamed to BufNewFile\n"
+"   and BufOpenFile.\n"
+" * The status line can be further customized.\n"
+"   See `:doc options modelinefmt`.\n";
+
+struct startup_error : runtime_error
+{
+    using runtime_error::runtime_error;
 };
 
 inline void write_stdout(StringView str) { write(1, str); }
@@ -144,7 +157,8 @@ void register_env_vars()
             "window_height", false,
             [](StringView name, const Context& context) -> String
             { return to_string(context.window().dimensions().line); }
-    } };
+        }
+    };
 
     ShellManager& shell_manager = ShellManager::instance();
     for (auto& env_var : env_vars)
@@ -186,6 +200,19 @@ void register_registers()
                 for (auto& sel : context.selections())
                     result.emplace_back(i < sel.captures().size() ? sel.captures()[i] : "");
                 return result;
+            },
+            [i](Context& context, ConstArrayView<String> values) {
+                if (values.empty())
+                    return;
+
+                auto& sels = context.selections();
+                for (size_t sel_index = 0; sel_index < sels.size(); ++sel_index)
+                {
+                    auto& sel = sels[sel_index];
+                    if (sel.captures().size() < i+1)
+                        sel.captures().resize(i+1);
+                    sel.captures()[i] = values[std::min(sel_index, values.size()-1)];
+                }
             }));
     }
 
@@ -212,6 +239,12 @@ static void check_timeout(const int& timeout)
 {
     if (timeout < 50)
         throw runtime_error{"the minimum acceptable timeout is 50 milliseconds"};
+}
+
+static void check_extra_word_char(const String& extra_chars)
+{
+    if (contains_that(extra_chars, is_blank))
+        throw runtime_error{"blanks are not accepted for extra completion characters"};
 }
 
 void register_options()
@@ -249,7 +282,7 @@ void register_options()
                    Vector<String, MemoryDomain::Options>({ "./", "/usr/include" }));
     reg.declare_option("completers", "insert mode completers to execute.",
                        InsertCompleterDescList({
-                           InsertCompleterDesc{ InsertCompleterDesc::Filename },
+                           InsertCompleterDesc{ InsertCompleterDesc::Filename, {} },
                            InsertCompleterDesc{ InsertCompleterDesc::Word, "all"_str }
                        }), OptionFlags::None);
     reg.declare_option("static_words", "list of words to always consider for insert word completion",
@@ -268,30 +301,28 @@ void register_options()
                        "\n"
                        "The ncurses ui supports the following options:\n"
                        "<key>:                        <value>:\n"
-                       "    ncurses_assistant             clippy|cat|none|off\n"
+                       "    ncurses_assistant             clippy|cat|dilbert|none|off\n"
                        "    ncurses_status_on_top         bool\n"
                        "    ncurses_set_title             bool\n"
                        "    ncurses_enable_mouse          bool\n"
+                       "    ncurses_change_colors         bool\n"
                        "    ncurses_wheel_up_button       int\n"
-                       "    ncurses_wheel_down_button     int\n"
-                       "    ncurses_buffer_padding_str    str\n"
-                       "    ncurses_buffer_padding_type   fill|single|off\n",
+                       "    ncurses_wheel_down_button     int\n",
                        UserInterface::Options{});
     reg.declare_option("modelinefmt", "format string used to generate the modeline",
-                       "%val{bufname} %val{cursor_line}:%val{cursor_char_column} "_str);
+                       "%val{bufname} %val{cursor_line}:%val{cursor_char_column} {{context_info}} {{mode_info}} - %val{client}@[%val{session}]"_str);
+
     reg.declare_option("debug", "various debug flags", DebugFlags::None);
     reg.declare_option("readonly", "prevent buffers from being modified", false);
-    reg.declare_option("completion_extra_word_char",
-                       "Additional characters to be considered as words for insert completion",
-                       ""_str);
+    reg.declare_option<String, check_extra_word_char>(
+        "completion_extra_word_char",
+        "Additional characters to be considered as words for insert completion",
+        ""_str);
 }
 
-struct convert_to_client_mode
-{
-    String session;
-    String buffer_name;
-    String selections;
-};
+static Client* local_client = nullptr;
+static UserInterface* local_ui = nullptr;
+static bool convert_to_client_pending = false;
 
 enum class UIType
 {
@@ -300,21 +331,13 @@ enum class UIType
     Dummy,
 };
 
-static Client* local_client = nullptr;
-static UserInterface* local_ui = nullptr;
-static bool convert_to_client_pending = false;
-
-pid_t fork_server_to_background()
+UIType parse_ui_type(StringView ui_name)
 {
-    if (pid_t pid = fork())
-        return pid;
+    if (ui_name == "ncurses") return UIType::NCurses;
+    if (ui_name == "json") return UIType::Json;
+    if (ui_name == "dummy") return UIType::Dummy;
 
-    if (fork()) // double fork to orphan the server
-        exit(0);
-
-    write_stderr(format("Kakoune forked server to background ({}), for session '{}'\n",
-                        getpid(), Server::instance().session()));
-    return 0;
+    throw parameter_error(format("error: unknown ui type: '{}'", ui_name));
 }
 
 std::unique_ptr<UserInterface> make_ui(UIType ui_type)
@@ -334,8 +357,9 @@ std::unique_ptr<UserInterface> make_ui(UIType ui_type)
         void draw_status(const DisplayLine&, const DisplayLine&, const Face&) override {}
         void draw_buflist(const DisplayLine&, const Face&) override {}
         DisplayCoord dimensions() override { return {24,80}; }
+        void set_cursor(CursorMode, DisplayCoord) override {}
         void refresh(bool) override {}
-        void set_on_key(OnKeyCallback callback) override {}
+        void set_on_key(OnKeyCallback) override {}
         void set_ui_options(const Options&) override {}
     };
 
@@ -346,6 +370,19 @@ std::unique_ptr<UserInterface> make_ui(UIType ui_type)
         case UIType::Dummy: return make_unique<DummyUI>();
     }
     throw logic_error{};
+}
+
+pid_t fork_server_to_background()
+{
+    if (pid_t pid = fork())
+        return pid;
+
+    if (fork()) // double fork to orphan the server
+        exit(0);
+
+    write_stderr(format("Kakoune forked server to background ({}), for session '{}'\n",
+                        getpid(), Server::instance().session()));
+    return 0;
 }
 
 std::unique_ptr<UserInterface> create_local_ui(UIType ui_type)
@@ -386,7 +423,7 @@ std::unique_ptr<UserInterface> create_local_ui(UIType ui_type)
            });
         }
 
-        ~LocalUI()
+        ~LocalUI() override
         {
             set_signal_handler(SIGHUP, m_old_sighup);
             set_signal_handler(SIGTSTP, m_old_sigtstp);
@@ -419,49 +456,19 @@ std::unique_ptr<UserInterface> create_local_ui(UIType ui_type)
         int tty = open("/dev/tty", O_RDONLY);
         dup2(tty, 0);
         close(tty);
-        create_fifo_buffer("*stdin*", fd);
+        create_fifo_buffer("*stdin*", fd, Buffer::Flags::None);
     }
 
     return make_unique<LocalUI>();
 }
 
-void signal_handler(int signal)
-{
-    NCursesUI::abort();
-    const char* text = nullptr;
-    switch (signal)
-    {
-        case SIGSEGV: text = "SIGSEGV"; break;
-        case SIGFPE:  text = "SIGFPE";  break;
-        case SIGQUIT: text = "SIGQUIT"; break;
-        case SIGTERM: text = "SIGTERM"; break;
-        case SIGPIPE: text = "SIGPIPE"; break;
-    }
-    if (signal != SIGTERM)
-    {
-        auto msg = format("Received {}, exiting.\nPid: {}\nCallstack:\n{}",
-                          text, getpid(), Backtrace{}.desc());
-        write_stderr(msg);
-        notify_fatal_error(msg);
-    }
-
-    if (Server::has_instance())
-        Server::instance().close_session();
-    if (BufferManager::has_instance())
-        BufferManager::instance().backup_modified_buffers();
-
-    if (signal == SIGTERM)
-        exit(-1);
-    else
-        abort();
-}
-
-int run_client(StringView session, StringView init_cmds, UIType ui_type)
+int run_client(StringView session, StringView client_init,
+               Optional<BufferCoord> init_coord, UIType ui_type)
 {
     try
     {
         EventManager event_manager;
-        RemoteClient client{session, make_ui(ui_type), get_env_vars(), init_cmds};
+        RemoteClient client{session, make_ui(ui_type), get_env_vars(), client_init, std::move(init_coord)};
         while (true)
             event_manager.handle_next_events(EventMode::Normal);
     }
@@ -474,13 +481,30 @@ int run_client(StringView session, StringView init_cmds, UIType ui_type)
     return 0;
 }
 
-int run_server(StringView session,
-               StringView init_cmds, BufferCoord init_coord,
-               bool ignore_kakrc, bool daemon, bool readonly, UIType ui_type,
+struct convert_to_client_mode
+{
+    String session;
+    String buffer_name;
+    String selections;
+};
+
+enum class ServerFlags
+{
+    None        = 0,
+    IgnoreKakrc = 1 << 0,
+    Daemon      = 1 << 1,
+    ReadOnly    = 1 << 2,
+    StartupInfo = 1 << 3,
+};
+constexpr bool with_bit_ops(Meta::Type<ServerFlags>) { return true; }
+
+int run_server(StringView session, StringView server_init,
+               StringView client_init, Optional<BufferCoord> init_coord,
+               ServerFlags flags, UIType ui_type,
                ConstArrayView<StringView> files)
 {
     static bool terminate = false;
-    if (daemon)
+    if (flags & ServerFlags::Daemon)
     {
         if (session.empty())
         {
@@ -519,21 +543,33 @@ int run_server(StringView session,
 
     write_to_debug_buffer("*** This is the debug buffer, where debug info will be written ***");
 
-    GlobalScope::instance().options().get_local_option("readonly").set(readonly);
+    GlobalScope::instance().options().get_local_option("readonly").set<bool>(flags & ServerFlags::ReadOnly);
 
     Server server{session.empty() ? to_string(getpid()) : session.str()};
 
     bool startup_error = false;
-    if (not ignore_kakrc) try
+    if (not (flags & ServerFlags::IgnoreKakrc)) try
     {
-        Context initialisation_context{Context::EmptyContextFlag{}};
+        Context init_context{Context::EmptyContextFlag{}};
         command_manager.execute(format("source {}/kakrc", runtime_directory()),
-                                initialisation_context);
+                                init_context);
     }
-    catch (Kakoune::runtime_error& error)
+    catch (runtime_error& error)
     {
         startup_error = true;
         write_to_debug_buffer(format("error while parsing kakrc:\n"
+                                     "    {}", error.what()));
+    }
+
+    if (not server_init.empty()) try
+    {
+        Context init_context{Context::EmptyContextFlag{}};
+        command_manager.execute(server_init, init_context);
+    }
+    catch (runtime_error& error)
+    {
+        startup_error = true;
+        write_to_debug_buffer(format("error while running server init commands:\n"
                                      "    {}", error.what()));
     }
 
@@ -551,10 +587,10 @@ int run_server(StringView session,
             try
             {
                 Buffer *buffer = open_or_create_file_buffer(file);
-                if (readonly)
+                if (flags & ServerFlags::ReadOnly)
                     buffer->flags() |= Buffer::Flags::ReadOnly;
             }
-            catch (Kakoune::runtime_error& error)
+            catch (runtime_error& error)
             {
                 startup_error = true;
                 write_to_debug_buffer(format("error while opening file '{}':\n"
@@ -562,24 +598,29 @@ int run_server(StringView session,
             }
         }
     }
-    catch (Kakoune::runtime_error& error)
+    catch (runtime_error& error)
     {
          write_to_debug_buffer(format("error while opening command line files: {}", error.what()));
     }
 
     try
     {
-        if (not daemon)
+        if (not (flags & ServerFlags::Daemon))
+        {
             local_client = client_manager.create_client(
-                 create_local_ui(ui_type), get_env_vars(), init_cmds, init_coord);
+                 create_local_ui(ui_type), get_env_vars(), client_init, std::move(init_coord));
 
-        if (local_client and startup_error)
-            local_client->print_status({
-                "error during startup, see *debug* buffer for details",
-                get_face("Error")
-            });
+            if (startup_error)
+                local_client->print_status({
+                    "error during startup, see *debug* buffer for details",
+                    get_face("Error")
+                });
 
-        while (not terminate and (not client_manager.empty() or daemon))
+            if (flags & ServerFlags::StartupInfo)
+                local_client->info_show("Welcome to Kakoune", startup_info, {}, InfoStyle::Prompt);
+        }
+
+        while (not terminate and (not client_manager.empty() or (flags & ServerFlags::Daemon)))
         {
             client_manager.redraw_clients();
             event_manager.handle_next_events(EventMode::Normal);
@@ -587,7 +628,6 @@ int run_server(StringView session,
             client_manager.clear_client_trash();
             client_manager.clear_window_trash();
             buffer_manager.clear_buffer_trash();
-            string_registry.purge_unused();
 
             if (convert_to_client_pending)
             {
@@ -617,7 +657,7 @@ int run_server(StringView session,
     return 0;
 }
 
-int run_filter(StringView keystr, StringView commands, ConstArrayView<StringView> files, bool quiet)
+int run_filter(StringView keystr, StringView commands, ConstArrayView<StringView> files, bool quiet, StringView suffix_backup)
 {
     StringRegistry  string_registry;
     GlobalScope     global_scope;
@@ -653,7 +693,7 @@ int run_filter(StringView keystr, StringView commands, ConstArrayView<StringView
                 for (auto& key : keys)
                     input_handler.handle_key(key);
             }
-            catch (Kakoune::runtime_error& err)
+            catch (runtime_error& err)
             {
                 if (not quiet)
                     write_stderr(format("error while applying keys to buffer '{}': {}\n",
@@ -664,9 +704,10 @@ int run_filter(StringView keystr, StringView commands, ConstArrayView<StringView
         for (auto& file : files)
         {
             Buffer* buffer = open_file_buffer(file);
-            write_buffer_to_file(*buffer, file + ".kak-bak");
+            if (not suffix_backup.empty())
+                write_buffer_to_file(*buffer, buffer->name() + suffix_backup);
             apply_to_buffer(*buffer);
-            write_buffer_to_file(*buffer, file);
+            write_buffer_to_file(*buffer, buffer->name());
             buffer_manager.delete_buffer(*buffer);
         }
         if (not isatty(0))
@@ -678,7 +719,7 @@ int run_filter(StringView keystr, StringView commands, ConstArrayView<StringView
             buffer_manager.delete_buffer(buffer);
         }
     }
-    catch (Kakoune::runtime_error& err)
+    catch (runtime_error& err)
     {
         write_stderr(format("error: {}\n", err.what()));
     }
@@ -712,17 +753,43 @@ int run_pipe(StringView session)
     return 0;
 }
 
-UIType parse_ui_type(StringView ui_name)
+void signal_handler(int signal)
 {
-    if (ui_name == "ncurses") return UIType::NCurses;
-    if (ui_name == "json") return UIType::Json;
-    if (ui_name == "dummy") return UIType::Dummy;
+    NCursesUI::abort();
+    const char* text = nullptr;
+    switch (signal)
+    {
+        case SIGSEGV: text = "SIGSEGV"; break;
+        case SIGFPE:  text = "SIGFPE";  break;
+        case SIGQUIT: text = "SIGQUIT"; break;
+        case SIGTERM: text = "SIGTERM"; break;
+        case SIGPIPE: text = "SIGPIPE"; break;
+    }
+    if (signal != SIGTERM)
+    {
+        auto msg = format("Received {}, exiting.\nPid: {}\nCallstack:\n{}",
+                          text, getpid(), Backtrace{}.desc());
+        write_stderr(msg);
+        notify_fatal_error(msg);
+    }
 
-    throw parameter_error(format("error: unknown ui type: '{}'", ui_name));
+    if (Server::has_instance())
+        Server::instance().close_session();
+    if (BufferManager::has_instance())
+        BufferManager::instance().backup_modified_buffers();
+
+    if (signal == SIGTERM)
+        exit(-1);
+    else
+        abort();
+}
+
 }
 
 int main(int argc, char* argv[])
 {
+    using namespace Kakoune;
+
     setlocale(LC_ALL, "");
 
     set_signal_handler(SIGSEGV, signal_handler);
@@ -734,37 +801,58 @@ int main(int argc, char* argv[])
     set_signal_handler(SIGCHLD, [](int){});
 
     Vector<String> params;
-    for (size_t i = 1; i < argc; ++i)
-        params.push_back(argv[i]);
+    for (int i = 1; i < argc; ++i)
+        params.emplace_back(argv[i]);
 
     const ParameterDesc param_desc{
         SwitchMap{ { "c", { true,  "connect to given session" } },
-                   { "e", { true,  "execute argument on initialisation" } },
+                   { "e", { true,  "execute argument on client initialisation" } },
+                   { "E", { true,  "execute argument on server initialisation" } },
                    { "n", { false, "do not source kakrc files on startup" } },
                    { "s", { true,  "set session name" } },
                    { "d", { false, "run as a headless session (requires -s)" } },
                    { "p", { true,  "just send stdin as commands to the given session" } },
                    { "f", { true,  "act as a filter, executing given keys on given files" } },
+                   { "i", { true, "backup the files on which a filter is applied using the given suffix" } },
                    { "q", { false, "in filter mode, be quiet about errors applying keys" } },
                    { "ui", { true, "set the type of user interface to use (ncurses, dummy, or json)" } },
                    { "l", { false, "list existing sessions" } },
                    { "clear", { false, "clear dead sessions" } },
-                   { "ro", { false, "readonly mode" } } }
+                   { "ro", { false, "readonly mode" } },
+                   { "help", { false, "display a help message and quit" } } }
     };
+
     try
     {
-        std::sort(keymap.begin(), keymap.end(),
-                  [](const NormalCmdDesc& lhs, const NormalCmdDesc& rhs)
-                  { return lhs.key < rhs.key; });
+        auto show_usage = [&]()
+        {
+            write_stdout(format("Usage: {} [options] [file]... [+<line>[:<col>]|+:]\n\n"
+                    "Options:\n"
+                    "{}\n"
+                    "Prefixing a positional argument with a plus (`+`) sign will place the\n"
+                    "cursor at a given set of coordinates, or the end of the buffer if the plus\n"
+                    "sign is followed only by a colon (`:`)\n",
+                    argv[0], generate_switches_doc(param_desc.switches)));
+            return 0;
+        };
+
+        if (contains(ConstArrayView<char*>{argv+1, (size_t)argc-1}, StringView{"--help"}))
+            return show_usage();
 
         ParametersParser parser(params, param_desc);
+
+        const bool show_help_message = (bool)parser.get_switch("help");
+        if (show_help_message)
+            return show_usage();
 
         const bool list_sessions = (bool)parser.get_switch("l");
         const bool clear_sessions = (bool)parser.get_switch("clear");
         if (list_sessions or clear_sessions)
         {
-            StringView username = getpwuid(geteuid())->pw_name;
-            for (auto& session : list_files(format("/tmp/kakoune/{}/", username)))
+            const StringView username = getpwuid(geteuid())->pw_name;
+            const StringView tmp_dir = tmpdir();
+            for (auto& session : list_files(format("{}/kakoune/{}/", tmp_dir,
+                                                   username)))
             {
                 const bool valid = check_session(session);
                 if (list_sessions)
@@ -772,7 +860,8 @@ int main(int argc, char* argv[])
                 if (not valid and clear_sessions)
                 {
                     char socket_file[128];
-                    format_to(socket_file, "/tmp/kakoune/{}/{}", username, session);
+                    format_to(socket_file, "{}/kakoune/{}/{}", tmp_dir,
+                              username, session);
                     unlink(socket_file);
                 }
             }
@@ -781,7 +870,7 @@ int main(int argc, char* argv[])
 
         if (auto session = parser.get_switch("p"))
         {
-            for (auto opt : { "c", "n", "s", "d", "e", "ro" })
+            for (auto opt : { "c", "n", "s", "d", "e", "E", "ro" })
             {
                 if (parser.get_switch(opt))
                 {
@@ -792,7 +881,8 @@ int main(int argc, char* argv[])
             return run_pipe(*session);
         }
 
-        auto init_cmds = parser.get_switch("e").value_or(StringView{});
+        auto client_init = parser.get_switch("e").value_or(StringView{});
+        auto server_init = parser.get_switch("E").value_or(StringView{});
         const UIType ui_type = parse_ui_type(parser.get_switch("ui").value_or("ncurses"));
 
         if (auto keys = parser.get_switch("f"))
@@ -807,13 +897,41 @@ int main(int argc, char* argv[])
             for (size_t i = 0; i < parser.positional_count(); ++i)
                 files.emplace_back(parser[i]);
 
-            return run_filter(*keys, init_cmds, files,
-                              (bool)parser.get_switch("q"));
+            return run_filter(*keys, client_init, files,
+                              (bool)parser.get_switch("q"),
+                              parser.get_switch("i").value_or(StringView{}));
+        }
+
+        Vector<StringView> files;
+        Optional<BufferCoord> init_coord;
+        for (auto& name : parser)
+        {
+            if (not name.empty() and name[0_byte] == '+')
+            {
+                if (name == "+" or name  == "+:")
+                {
+                    client_init = client_init + "; exec gj";
+                    continue;
+                }
+                auto colon = find(name, ':');
+                if (auto line = str_to_int_ifp({name.begin()+1, colon}))
+                {
+                    init_coord = BufferCoord{
+                        *line - 1,
+                        colon != name.end() ?
+                            str_to_int_ifp({colon+1, name.end()}).value_or(1) - 1
+                          : 0
+                    };
+                    continue;
+                }
+            }
+
+            files.emplace_back(name);
         }
 
         if (auto server_session = parser.get_switch("c"))
         {
-            for (auto opt : { "n", "s", "d", "ro" })
+            for (auto opt : { "n", "s", "d", "E", "ro" })
             {
                 if (parser.get_switch(opt))
                 {
@@ -822,52 +940,33 @@ int main(int argc, char* argv[])
                 }
             }
             String new_files;
-            for (auto name : parser)
+            for (auto name : files)
                 new_files += format("edit '{}';", escape(real_path(name), "'", '\\'));
 
-            return run_client(*server_session, new_files + init_cmds, ui_type);
+            return run_client(*server_session, new_files + client_init, init_coord, ui_type);
         }
         else
         {
-            BufferCoord init_coord;
-            Vector<StringView> files;
-            for (auto& name : parser)
-            {
-                if (not name.empty() and name[0_byte] == '+')
-                {
-                    auto colon = find(name, ':');
-                    if (auto line = str_to_int_ifp({name.begin()+1, colon}))
-                    {
-                        init_coord.line = *line - 1;
-                        if (colon != name.end())
-                            init_coord.column = str_to_int_ifp({colon+1, name.end()}).value_or(1) - 1;
-
-                        continue;
-                    }
-                }
-
-                files.emplace_back(name);
-            }
 
             StringView session = parser.get_switch("s").value_or(StringView{});
             try
             {
-                return run_server(session, init_cmds, init_coord,
-                                  (bool)parser.get_switch("n"),
-                                  (bool)parser.get_switch("d"),
-                                  (bool)parser.get_switch("ro"),
-                                  ui_type, files);
+                auto flags = (parser.get_switch("n") ? ServerFlags::IgnoreKakrc : ServerFlags::None) |
+                             (parser.get_switch("d") ? ServerFlags::Daemon : ServerFlags::None) |
+                             (parser.get_switch("ro") ? ServerFlags::ReadOnly : ServerFlags::None) |
+                             (argc == 1 ? ServerFlags::StartupInfo : ServerFlags::None);
+                return run_server(session, server_init, client_init, init_coord, flags, ui_type, files);
             }
             catch (convert_to_client_mode& convert)
             {
                 raise(SIGTSTP);
                 return run_client(convert.session,
                                   format("try %^buffer '{}'; select '{}'^; echo converted to client only mode",
-                                         escape(convert.buffer_name, "'^", '\\'), convert.selections), ui_type);
+                                         escape(convert.buffer_name, "'^", '\\'), convert.selections), {}, ui_type);
             }
         }
     }
-    catch (Kakoune::parameter_error& error)
+    catch (parameter_error& error)
     {
         write_stderr(format("Error while parsing parameters: {}\n"
                             "Valid switches:\n"

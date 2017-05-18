@@ -54,6 +54,8 @@ static constexpr KeyAndName keynamemap[] = {
     { "end", Key::End },
     { "backtab", Key::BackTab },
     { "del", Key::Delete },
+    { "plus", '+' },
+    { "minus", '-' },
 };
 
 KeyList parse_keys(StringView str)
@@ -64,43 +66,49 @@ KeyList parse_keys(StringView str)
     {
         if (*it != '<')
         {
-            result.push_back({Key::Modifiers::None, *it});
+            result.emplace_back(Key::Modifiers::None, *it);
             continue;
         }
 
         Utf8It end_it = std::find(it, str_end, '>');
         if (end_it == str_end)
         {
-            result.push_back({Key::Modifiers::None, *it});
+            result.emplace_back(Key::Modifiers::None, *it);
             continue;
         }
 
         Key::Modifiers modifier = Key::Modifiers::None;
 
+        StringView full_desc{it.base(), end_it.base()+1};
         StringView desc{it.base()+1, end_it.base()};
-        if (desc.length() > 2 and desc[1_byte] == '-')
+        for (auto dash = find(desc, '-'); dash != desc.end(); dash = find(desc, '-'))
         {
+            if (dash != desc.begin() + 1)
+                throw runtime_error(format("unable to parse modifier in '{}'",
+                                           full_desc));
+
             switch(to_lower(desc[0_byte]))
             {
-                case 'c': modifier = Key::Modifiers::Control; break;
-                case 'a': modifier = Key::Modifiers::Alt; break;
+                case 'c': modifier |= Key::Modifiers::Control; break;
+                case 'a': modifier |= Key::Modifiers::Alt; break;
                 default:
-                    throw runtime_error("unable to parse modifier in " +
-                                        StringView{it.base(), end_it.base()+1});
+                    throw runtime_error(format("unable to parse modifier in '{}'",
+                                               full_desc));
             }
-            desc = desc.substr(2_byte);
+            desc = StringView{dash+1, desc.end()};
         }
+
         auto name_it = find_if(keynamemap, [&desc](const KeyAndName& item)
                                            { return item.name == desc; });
         if (name_it != end(keynamemap))
             result.push_back(canonicalize_ifn({ modifier, name_it->key }));
         else if (desc.char_length() == 1)
-            result.push_back(Key{ modifier, desc[0_char] });
+            result.emplace_back(modifier, desc[0_char]);
         else if (to_lower(desc[0_byte]) == 'f' and desc.length() <= 3)
         {
             int val = str_to_int(desc.substr(1_byte));
             if (val >= 1 and val <= 12)
-                result.push_back(Key{ modifier, Key::F1 + (val - 1) });
+                result.emplace_back(modifier, Key::F1 + (val - 1));
             else
                 throw runtime_error("Only F1 through F12 are supported");
         }
@@ -158,8 +166,9 @@ String key_to_str(Key key)
 
     switch (key.modifiers)
     {
-    case Key::Modifiers::Control: res = "c-" + res; named = true; break;
-    case Key::Modifiers::Alt:     res = "a-" + res; named = true; break;
+    case Key::Modifiers::Control:    res = "c-" + res; named = true; break;
+    case Key::Modifiers::Alt:        res = "a-" + res; named = true; break;
+    case Key::Modifiers::ControlAlt: res = "c-a-" + res; named = true; break;
     default: break;
     }
     if (named)
@@ -180,6 +189,8 @@ UnitTest test_keys{[]()
         keys_as_str += key_to_str(key);
     auto parsed_keys = parse_keys(keys_as_str);
     kak_assert(keys == parsed_keys);
+    kak_assert(ConstArrayView<Key>{parse_keys("a<c-a-b>c")} ==
+               ConstArrayView<Key>{'a', {Key::Modifiers::ControlAlt, 'b'}, 'c'});
 }};
 
 }

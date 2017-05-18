@@ -1,15 +1,151 @@
 #include "selectors.hh"
 
+#include "buffer_utils.hh"
+#include "flags.hh"
 #include "optional.hh"
+#include "regex.hh"
 #include "string.hh"
+#include "unicode.hh"
 #include "unit_tests.hh"
+#include "utf8_iterator.hh"
 
 #include <algorithm>
 
 namespace Kakoune
 {
 
-Selection select_line(const Buffer& buffer, const Selection& selection)
+using Utf8Iterator = utf8::iterator<BufferIterator>;
+
+namespace
+{
+
+Selection target_eol(Selection sel)
+{
+    sel.cursor().target = INT_MAX;
+    return sel;
+}
+
+Selection utf8_range(const BufferIterator& first, const BufferIterator& last)
+{
+    return {first.coord(), last.coord()};
+}
+
+Selection utf8_range(const Utf8Iterator& first, const Utf8Iterator& last)
+{
+    return {first.base().coord(), last.base().coord()};
+}
+
+}
+
+template<WordType word_type>
+Optional<Selection>
+select_to_next_word(const Buffer& buffer, const Selection& selection)
+{
+    Utf8Iterator begin{buffer.iterator_at(selection.cursor()), buffer};
+    if (begin+1 == buffer.end())
+        return {};
+    if (categorize<word_type>(*begin) != categorize<word_type>(*(begin+1)))
+        ++begin;
+
+    if (not skip_while(begin, buffer.end(),
+                       [](Codepoint c) { return is_eol(c); }))
+        return {};
+    Utf8Iterator end = begin+1;
+
+    if (word_type == Word and is_punctuation(*begin))
+        skip_while(end, buffer.end(), is_punctuation);
+    else if (is_word<word_type>(*begin))
+        skip_while(end, buffer.end(), is_word<word_type>);
+
+    skip_while(end, buffer.end(), is_horizontal_blank);
+
+    return utf8_range(begin, end-1);
+}
+template Optional<Selection> select_to_next_word<WordType::Word>(const Buffer&, const Selection&);
+template Optional<Selection> select_to_next_word<WordType::WORD>(const Buffer&, const Selection&);
+
+template<WordType word_type>
+Optional<Selection>
+select_to_next_word_end(const Buffer& buffer, const Selection& selection)
+{
+    Utf8Iterator begin{buffer.iterator_at(selection.cursor()), buffer};
+    if (begin+1 == buffer.end())
+        return {};
+    if (categorize<word_type>(*begin) != categorize<word_type>(*(begin+1)))
+        ++begin;
+
+    if (not skip_while(begin, buffer.end(),
+                       [](Codepoint c) { return is_eol(c); }))
+        return {};
+    Utf8Iterator end = begin;
+    skip_while(end, buffer.end(), is_horizontal_blank);
+
+    if (word_type == Word and is_punctuation(*end))
+        skip_while(end, buffer.end(), is_punctuation);
+    else if (is_word<word_type>(*end))
+        skip_while(end, buffer.end(), is_word<word_type>);
+
+    return utf8_range(begin, end-1);
+}
+template Optional<Selection> select_to_next_word_end<WordType::Word>(const Buffer&, const Selection&);
+template Optional<Selection> select_to_next_word_end<WordType::WORD>(const Buffer&, const Selection&);
+
+template<WordType word_type>
+Optional<Selection>
+select_to_previous_word(const Buffer& buffer, const Selection& selection)
+{
+    Utf8Iterator begin{buffer.iterator_at(selection.cursor()), buffer};
+    if (begin == buffer.begin())
+        return {};
+    if (categorize<word_type>(*begin) != categorize<word_type>(*(begin-1)))
+        --begin;
+
+    skip_while_reverse(begin, buffer.begin(), [](Codepoint c){ return is_eol(c); });
+    Utf8Iterator end = begin;
+
+    bool with_end = skip_while_reverse(end, buffer.begin(), is_horizontal_blank);
+    if (word_type == Word and is_punctuation(*end))
+        with_end = skip_while_reverse(end, buffer.begin(), is_punctuation);
+
+    else if (is_word<word_type>(*end))
+        with_end = skip_while_reverse(end, buffer.begin(), is_word<word_type>);
+
+    return utf8_range(begin, with_end ? end : end+1);
+}
+template Optional<Selection> select_to_previous_word<WordType::Word>(const Buffer&, const Selection&);
+template Optional<Selection> select_to_previous_word<WordType::WORD>(const Buffer&, const Selection&);
+
+template<WordType word_type>
+Optional<Selection>
+select_word(const Buffer& buffer, const Selection& selection,
+            int count, ObjectFlags flags)
+{
+    Utf8Iterator first{buffer.iterator_at(selection.cursor()), buffer};
+    if (not is_word<word_type>(*first))
+        return {};
+
+    Utf8Iterator last = first;
+    if (flags & ObjectFlags::ToBegin)
+    {
+        skip_while_reverse(first, buffer.begin(), is_word<word_type>);
+        if (not is_word<word_type>(*first))
+            ++first;
+    }
+    if (flags & ObjectFlags::ToEnd)
+    {
+        skip_while(last, buffer.end(), is_word<word_type>);
+        if (not (flags & ObjectFlags::Inner))
+            skip_while(last, buffer.end(), is_horizontal_blank);
+        --last;
+    }
+    return (flags & ObjectFlags::ToEnd) ? utf8_range(first, last)
+                                        : utf8_range(last, first);
+}
+template Optional<Selection> select_word<WordType::Word>(const Buffer&, const Selection&, int, ObjectFlags);
+template Optional<Selection> select_word<WordType::WORD>(const Buffer&, const Selection&, int, ObjectFlags);
+
+Optional<Selection>
+select_line(const Buffer& buffer, const Selection& selection)
 {
     Utf8Iterator first{buffer.iterator_at(selection.cursor()), buffer};
     if (*first == '\n' and first + 1 != buffer.end())
@@ -24,11 +160,47 @@ Selection select_line(const Buffer& buffer, const Selection& selection)
     return target_eol(utf8_range(first, last));
 }
 
-Selection select_matching(const Buffer& buffer, const Selection& selection)
+template<bool only_move>
+Optional<Selection>
+select_to_line_end(const Buffer& buffer, const Selection& selection)
+{
+    BufferCoord begin = selection.cursor();
+    LineCount line = begin.line;
+    BufferCoord end = utf8::previous(buffer.iterator_at({line, buffer[line].length() - 1}),
+                                   buffer.iterator_at(line)).coord();
+    if (end < begin) // Do not go backward when cursor is on eol
+        end = begin;
+    return target_eol({only_move ? end : begin, end});
+}
+template Optional<Selection> select_to_line_end<false>(const Buffer&, const Selection&);
+template Optional<Selection> select_to_line_end<true>(const Buffer&, const Selection&);
+
+template<bool only_move>
+Optional<Selection>
+select_to_line_begin(const Buffer& buffer, const Selection& selection)
+{
+    BufferCoord begin = selection.cursor();
+    BufferCoord end = begin.line;
+    return Selection{only_move ? end : begin, end};
+}
+template Optional<Selection> select_to_line_begin<false>(const Buffer&, const Selection&);
+template Optional<Selection> select_to_line_begin<true>(const Buffer&, const Selection&);
+
+Optional<Selection>
+select_to_first_non_blank(const Buffer& buffer, const Selection& selection)
+{
+    auto it = buffer.iterator_at(selection.cursor().line);
+    skip_while(it, buffer.iterator_at(selection.cursor().line+1),
+               is_horizontal_blank);
+    return {it.coord()};
+}
+
+Optional<Selection>
+select_matching(const Buffer& buffer, const Selection& selection)
 {
     Vector<Codepoint> matching_pairs = { '(', ')', '{', '}', '[', ']', '<', '>' };
     Utf8Iterator it{buffer.iterator_at(selection.cursor()), buffer};
-    Vector<Codepoint>::iterator match = matching_pairs.end();
+    auto match = matching_pairs.end();
     while (not is_eol(*it))
     {
         match = std::find(matching_pairs.begin(), matching_pairs.end(), *it);
@@ -37,7 +209,7 @@ Selection select_matching(const Buffer& buffer, const Selection& selection)
         ++it;
     }
     if (match == matching_pairs.end())
-        return selection;
+        return {};
 
     Utf8Iterator begin = it;
 
@@ -71,7 +243,7 @@ Selection select_matching(const Buffer& buffer, const Selection& selection)
             --it;
         }
     }
-    return selection;
+    return {};
 }
 
 template<typename Iterator, typename Container>
@@ -124,7 +296,7 @@ find_surrounding(Iterator begin, Iterator end,
     const bool nestable = opening != closing;
 
     auto first = pos;
-    if (to_begin)
+    if (to_begin and opening != *pos)
     {
         using RevIt = std::reverse_iterator<Iterator>;
         auto res = find_closing(RevIt{pos+1}, RevIt{begin},
@@ -168,9 +340,10 @@ find_surrounding(const Container& container, Iterator pos,
                             opening, closing, flags, init_level);
 }
 
-Selection select_surrounding(const Buffer& buffer, const Selection& selection,
-                             StringView opening, StringView closing, int level,
-                             ObjectFlags flags)
+Optional<Selection>
+select_surrounding(const Buffer& buffer, const Selection& selection,
+                   StringView opening, StringView closing, int level,
+                   ObjectFlags flags)
 {
     const bool nestable = opening != closing;
     auto pos = selection.cursor();
@@ -179,7 +352,7 @@ Selection select_surrounding(const Buffer& buffer, const Selection& selection,
         if (auto res = find_surrounding(buffer, buffer.iterator_at(pos),
                                         opening, closing, flags, level))
             return utf8_range(res->first, res->second);
-        return selection;
+        return {};
     }
 
     auto c = buffer.byte_at(pos);
@@ -190,22 +363,23 @@ Selection select_surrounding(const Buffer& buffer, const Selection& selection,
     auto res = find_surrounding(buffer, buffer.iterator_at(pos),
                                 opening, closing, flags, level);
     if (not res)
-        return selection;
+        return {};
 
     Selection sel = utf8_range(res->first, res->second);
 
-    if (flags == (ObjectFlags::ToBegin | ObjectFlags::ToEnd) and
-        sel.min() == selection.min() and sel.max() == selection.max())
-    {
-        if (auto res_parent = find_surrounding(buffer, buffer.iterator_at(pos),
-                                               opening, closing, flags, level+1))
-            return utf8_range(res_parent->first, res_parent->second);
-    }
-    return sel;
+    if (flags != (ObjectFlags::ToBegin | ObjectFlags::ToEnd) or
+        sel.min() != selection.min() or sel.max() != selection.max())
+        return sel;
+
+    if (auto res_parent = find_surrounding(buffer, buffer.iterator_at(pos),
+                                           opening, closing, flags, level+1))
+        return utf8_range(res_parent->first, res_parent->second);
+    return {};
 }
 
-Selection select_to(const Buffer& buffer, const Selection& selection,
-                    Codepoint c, int count, bool inclusive)
+Optional<Selection>
+select_to(const Buffer& buffer, const Selection& selection,
+          Codepoint c, int count, bool inclusive)
 {
     Utf8Iterator begin{buffer.iterator_at(selection.cursor()), buffer};
     Utf8Iterator end = begin;
@@ -214,15 +388,16 @@ Selection select_to(const Buffer& buffer, const Selection& selection,
         ++end;
         skip_while(end, buffer.end(), [c](Codepoint cur) { return cur != c; });
         if (end == buffer.end())
-            return selection;
+            return {};
     }
     while (--count > 0);
 
     return utf8_range(begin, inclusive ? end : end-1);
 }
 
-Selection select_to_reverse(const Buffer& buffer, const Selection& selection,
-                            Codepoint c, int count, bool inclusive)
+Optional<Selection>
+select_to_reverse(const Buffer& buffer, const Selection& selection,
+                  Codepoint c, int count, bool inclusive)
 {
     Utf8Iterator begin{buffer.iterator_at(selection.cursor()), buffer};
     Utf8Iterator end = begin;
@@ -231,14 +406,16 @@ Selection select_to_reverse(const Buffer& buffer, const Selection& selection,
         --end;
         if (skip_while_reverse(end, buffer.begin(),
                                [c](Codepoint cur) { return cur != c; }))
-            return selection;
+            return {};
     }
     while (--count > 0);
 
     return utf8_range(begin, inclusive ? end : end+1);
 }
 
-Selection select_number(const Buffer& buffer, const Selection& selection, int count, ObjectFlags flags)
+Optional<Selection>
+select_number(const Buffer& buffer, const Selection& selection,
+              int count, ObjectFlags flags)
 {
     auto is_number = [&](char c) {
         return (c >= '0' and c <= '9') or
@@ -249,7 +426,7 @@ Selection select_number(const Buffer& buffer, const Selection& selection, int co
     BufferIterator last = first;
 
     if (not is_number(*first) and *first != '-')
-        return selection;
+        return {};
 
     if (flags & ObjectFlags::ToBegin)
     {
@@ -272,7 +449,9 @@ Selection select_number(const Buffer& buffer, const Selection& selection, int co
                                         : Selection{last.coord(), first.coord()};
 }
 
-Selection select_sentence(const Buffer& buffer, const Selection& selection, int count, ObjectFlags flags)
+Optional<Selection>
+select_sentence(const Buffer& buffer, const Selection& selection,
+                int count, ObjectFlags flags)
 {
     auto is_end_of_sentence = [](char c) {
         return c == '.' or c == ';' or c == '!' or c == '?';
@@ -337,7 +516,9 @@ Selection select_sentence(const Buffer& buffer, const Selection& selection, int 
                                         : Selection{last.coord(), first.coord()};
 }
 
-Selection select_paragraph(const Buffer& buffer, const Selection& selection, int count, ObjectFlags flags)
+Optional<Selection>
+select_paragraph(const Buffer& buffer, const Selection& selection,
+                 int count, ObjectFlags flags)
 {
     BufferIterator first = buffer.iterator_at(selection.cursor());
 
@@ -390,7 +571,9 @@ Selection select_paragraph(const Buffer& buffer, const Selection& selection, int
                                         : Selection{last.coord(), first.coord()};
 }
 
-Selection select_whitespaces(const Buffer& buffer, const Selection& selection, int count, ObjectFlags flags)
+Optional<Selection>
+select_whitespaces(const Buffer& buffer, const Selection& selection,
+                   int count, ObjectFlags flags)
 {
     auto is_whitespace = [&](char c) {
         return c == ' ' or c == '\t' or
@@ -398,6 +581,10 @@ Selection select_whitespaces(const Buffer& buffer, const Selection& selection, i
     };
     BufferIterator first = buffer.iterator_at(selection.cursor());
     BufferIterator last  = first;
+
+    if (not is_whitespace(*first))
+        return {};
+
     if (flags & ObjectFlags::ToBegin)
     {
         if (is_whitespace(*first))
@@ -419,7 +606,9 @@ Selection select_whitespaces(const Buffer& buffer, const Selection& selection, i
                                         : Selection{last.coord(), first.coord()};
 }
 
-Selection select_indent(const Buffer& buffer, const Selection& selection, int count, ObjectFlags flags)
+Optional<Selection>
+select_indent(const Buffer& buffer, const Selection& selection,
+              int count, ObjectFlags flags)
 {
     auto get_indent = [](StringView str, int tabstop) {
         CharCount indent = 0;
@@ -442,12 +631,16 @@ Selection select_indent(const Buffer& buffer, const Selection& selection, int co
         return it == str.end();
     };
 
+    const bool to_begin = flags & ObjectFlags::ToBegin;
+    const bool to_end   = flags & ObjectFlags::ToEnd;
+
     int tabstop = buffer.options()["tabstop"].get<int>();
-    LineCount line = selection.cursor().line;
+    auto pos = selection.cursor();
+    LineCount line = pos.line;
     auto indent = get_indent(buffer[line], tabstop);
 
     LineCount begin_line = line - 1;
-    if (flags & ObjectFlags::ToBegin)
+    if (to_begin)
     {
         while (begin_line >= 0 and (buffer[begin_line] == StringView{"\n"} or
                                     get_indent(buffer[begin_line], tabstop) >= indent))
@@ -455,7 +648,7 @@ Selection select_indent(const Buffer& buffer, const Selection& selection, int co
     }
     ++begin_line;
     LineCount end_line = line + 1;
-    if (flags & ObjectFlags::ToEnd)
+    if (to_end)
     {
         const LineCount end = buffer.line_count();
         while (end_line < end and (buffer[end_line] == StringView{"\n"} or
@@ -473,11 +666,15 @@ Selection select_indent(const Buffer& buffer, const Selection& selection, int co
                is_only_whitespaces(buffer[end_line]))
             --end_line;
     }
-    return Selection{begin_line, {end_line, buffer[end_line].length() - 1}};
+
+    auto first = to_begin ? begin_line : pos;
+    auto last = to_end ? BufferCoord{end_line, buffer[end_line].length() - 1} : pos;
+    return to_end ? Selection{first, last} : Selection{last, first};
 }
 
-Selection select_argument(const Buffer& buffer, const Selection& selection,
-                          int level, ObjectFlags flags)
+Optional<Selection>
+select_argument(const Buffer& buffer, const Selection& selection,
+                int level, ObjectFlags flags)
 {
     enum Class { None, Opening, Closing, Delimiter };
     auto classify = [](Codepoint c) {
@@ -559,11 +756,13 @@ Selection select_argument(const Buffer& buffer, const Selection& selection,
         --end;
 
     if (flags & ObjectFlags::ToBegin and not (flags & ObjectFlags::ToEnd))
-        return {pos.coord(), begin.coord()};
-    return {(flags & ObjectFlags::ToBegin ? begin : pos).coord(), end.coord()};
+        return Selection{pos.coord(), begin.coord()};
+    return Selection{(flags & ObjectFlags::ToBegin ? begin : pos).coord(),
+                     end.coord()};
 }
 
-Selection select_lines(const Buffer& buffer, const Selection& selection)
+Optional<Selection>
+select_lines(const Buffer& buffer, const Selection& selection)
 {
     BufferCoord anchor = selection.anchor();
     BufferCoord cursor  = selection.cursor();
@@ -576,7 +775,8 @@ Selection select_lines(const Buffer& buffer, const Selection& selection)
     return target_eol({anchor, cursor});
 }
 
-Selection trim_partial_lines(const Buffer& buffer, const Selection& selection)
+Optional<Selection>
+trim_partial_lines(const Buffer& buffer, const Selection& selection)
 {
     BufferCoord anchor = selection.anchor();
     BufferCoord cursor  = selection.cursor();
@@ -588,14 +788,14 @@ Selection trim_partial_lines(const Buffer& buffer, const Selection& selection)
     if (to_line_end.column != buffer[to_line_end.line].length()-1)
     {
         if (to_line_end.line == 0)
-            return selection;
+            return {};
 
         auto prev_line = to_line_end.line-1;
         to_line_end = BufferCoord{ prev_line, buffer[prev_line].length()-1 };
     }
 
     if (to_line_start > to_line_end)
-        return selection;
+        return {};
 
     return target_eol({anchor, cursor});
 }
@@ -606,12 +806,85 @@ void select_buffer(SelectionList& selections)
     selections = SelectionList{ buffer, target_eol({{0,0}, buffer.back_coord()}) };
 }
 
+static RegexConstant::match_flag_type
+match_flags(const Buffer& buf, const BufferIterator& begin, const BufferIterator& end)
+{
+    return match_flags(is_bol(begin.coord()), is_eol(buf, end.coord()),
+                       is_bow(buf, begin.coord()), is_eow(buf, end.coord()));
+}
+
+static bool find_next(const Buffer& buffer, const BufferIterator& pos,
+                      MatchResults<BufferIterator>& matches,
+                      const Regex& ex, bool& wrapped)
+{
+    if (pos != buffer.end() and
+        regex_search(pos, buffer.end(), matches, ex,
+                     match_flags(buffer, pos, buffer.end())))
+        return true;
+    wrapped = true;
+    return regex_search(buffer.begin(), buffer.end(), matches, ex,
+                        match_flags(buffer, buffer.begin(), buffer.end()));
+}
+
+static bool find_prev(const Buffer& buffer, const BufferIterator& pos,
+                      MatchResults<BufferIterator>& matches,
+                      const Regex& ex, bool& wrapped)
+{
+    auto find_last_match = [&](const BufferIterator& pos) {
+        MatchResults<BufferIterator> m;
+        const bool is_pos_eol = is_eol(buffer, pos.coord());
+        const bool is_pos_eow = is_eow(buffer, pos.coord());
+        auto begin = buffer.begin();
+        while (begin != pos and
+               regex_search(begin, pos, m, ex,
+                            match_flags(is_bol(begin.coord()), is_pos_eol,
+                                        is_bow(buffer, begin.coord()), is_pos_eow)))
+        {
+            begin = utf8::next(m[0].first, pos);
+            if (matches.empty() or m[0].second > matches[0].second)
+                matches.swap(m);
+        }
+        return not matches.empty();
+    };
+    if (find_last_match(pos))
+        return true;
+    wrapped = true;
+    return find_last_match(buffer.end());
+}
+
+template<Direction direction>
+Selection find_next_match(const Buffer& buffer, const Selection& sel, const Regex& regex, bool& wrapped)
+{
+    MatchResults<BufferIterator> matches;
+    auto pos = buffer.iterator_at(direction == Backward ? sel.min() : sel.max());
+    wrapped = false;
+    const bool found = (direction == Forward) ?
+        find_next(buffer, utf8::next(pos, buffer.end()), matches, regex, wrapped)
+      : find_prev(buffer, pos, matches, regex, wrapped);
+
+    if (not found or matches[0].first == buffer.end())
+        throw runtime_error(format("'{}': no matches found", regex.str()));
+
+    CaptureList captures;
+    for (const auto& match : matches)
+        captures.push_back(buffer.string(match.first.coord(), match.second.coord()));
+
+    auto begin = matches[0].first, end = matches[0].second;
+    end = (begin == end) ? end : utf8::previous(end, begin);
+    if (direction == Backward)
+        std::swap(begin, end);
+
+    return {begin.coord(), end.coord(), std::move(captures)};
+}
+template Selection find_next_match<Forward>(const Buffer&, const Selection&, const Regex&, bool&);
+template Selection find_next_match<Backward>(const Buffer&, const Selection&, const Regex&, bool&);
+
 using RegexIt = RegexIterator<BufferIterator>;
 
-void select_all_matches(SelectionList& selections, const Regex& regex, unsigned capture)
+void select_all_matches(SelectionList& selections, const Regex& regex, int capture)
 {
-    const unsigned mark_count = regex.mark_count();
-    if (capture > mark_count)
+    const int mark_count = (int)regex.mark_count();
+    if (capture < 0 or capture > mark_count)
         throw runtime_error("invalid capture number");
 
     Vector<Selection> result;
@@ -620,11 +893,8 @@ void select_all_matches(SelectionList& selections, const Regex& regex, unsigned 
     {
         auto sel_beg = buffer.iterator_at(sel.min());
         auto sel_end = utf8::next(buffer.iterator_at(sel.max()), buffer.end());
-        const auto flags = match_flags(is_bol(sel_beg.coord()),
-                                       is_eol(buffer, sel_end.coord()),
-                                       is_bow(buffer, sel_beg.coord()),
-                                       is_eow(buffer, sel_end.coord()));
-        RegexIt re_it(sel_beg, sel_end, regex, flags);
+        RegexIt re_it(sel_beg, sel_end, regex,
+                      match_flags(buffer, sel_beg, sel_end));
         RegexIt re_end;
 
         for (; re_it != re_end; ++re_it)
@@ -654,9 +924,9 @@ void select_all_matches(SelectionList& selections, const Regex& regex, unsigned 
     selections = SelectionList{buffer, std::move(result)};
 }
 
-void split_selections(SelectionList& selections, const Regex& regex, unsigned capture)
+void split_selections(SelectionList& selections, const Regex& regex, int capture)
 {
-    if (capture > regex.mark_count())
+    if (capture < 0 or capture > (int)regex.mark_count())
         throw runtime_error("invalid capture number");
 
     Vector<Selection> result;
@@ -667,12 +937,9 @@ void split_selections(SelectionList& selections, const Regex& regex, unsigned ca
     {
         auto begin = buffer.iterator_at(sel.min());
         auto sel_end = utf8::next(buffer.iterator_at(sel.max()), buffer.end());
-        const auto flags = match_flags(is_bol(begin.coord()),
-                                       is_eol(buffer, sel_end.coord()),
-                                       is_bow(buffer, begin.coord()),
-                                       is_eow(buffer, sel_end.coord()));
 
-        RegexIt re_it(begin, sel_end, regex, flags);
+        RegexIt re_it(begin, sel_end, regex,
+                      match_flags(buffer, begin, sel_end));
         RegexIt re_end;
 
         for (; re_it != re_end; ++re_it)
@@ -700,56 +967,30 @@ void split_selections(SelectionList& selections, const Regex& regex, unsigned ca
 UnitTest test_find_surrounding{[]()
 {
     StringView s("[salut { toi[] }]");
-    {
-        auto res = find_surrounding(s, s.begin() + 10, '{', '}',
-                                    ObjectFlags::ToBegin | ObjectFlags::ToEnd, 0);
-        kak_assert(res and StringView{res->first, res->second+1} == "{ toi[] }");
-    }
-    {
-        auto res = find_surrounding(s, s.begin() + 10, '[', ']',
-                                    ObjectFlags::ToBegin | ObjectFlags::ToEnd | ObjectFlags::Inner, 0);
-        kak_assert(res and StringView{res->first, res->second+1} == "salut { toi[] }");
-    }
-    {
-        auto res = find_surrounding(s, s.begin(), '[', ']',
-                                    ObjectFlags::ToBegin | ObjectFlags::ToEnd, 0);
-        kak_assert(res and StringView{res->first, res->second+1} == "[salut { toi[] }]");
-    }
-    {
-        auto res = find_surrounding(s, s.begin()+7, '{', '}',
-                                    ObjectFlags::ToBegin | ObjectFlags::ToEnd, 0);
-        kak_assert(res and StringView{res->first, res->second+1} == "{ toi[] }");
-    }
-    {
-        auto res = find_surrounding(s, s.begin() + 12, '[', ']',
-                                    ObjectFlags::ToBegin | ObjectFlags::ToEnd | ObjectFlags::Inner, 0);
-        kak_assert(res and StringView{res->first, res->second+1} == "]");
-    }
-    {
-        auto res = find_surrounding(s, s.begin() + 14, '[', ']',
-                                    ObjectFlags::ToBegin | ObjectFlags::ToEnd, 0);
-        kak_assert(res and StringView{res->first, res->second+1} == "[salut { toi[] }]");
-    }
-    {
-        auto res = find_surrounding(s, s.begin() + 1, '[', ']', ObjectFlags::ToBegin, 0);
-        kak_assert(res and StringView{res->second, res->first+1} == "[s");
-    }
+    auto check_equal = [&](const char* pos, StringView opening, StringView closing,
+                           ObjectFlags flags, int init_level, StringView expected) {
+        auto res = find_surrounding(s, pos, opening, closing, flags, init_level);
+        auto min = std::min(res->first, res->second),
+             max = std::max(res->first, res->second);
+        kak_assert(res and StringView{min, max+1} == expected);
+    };
+
+    check_equal(s.begin() + 10, '{', '}', ObjectFlags::ToBegin | ObjectFlags::ToEnd, 0, "{ toi[] }");
+    check_equal(s.begin() + 10, '[', ']', ObjectFlags::ToBegin | ObjectFlags::ToEnd | ObjectFlags::Inner, 0, "salut { toi[] }");
+    check_equal(s.begin(), '[', ']', ObjectFlags::ToBegin | ObjectFlags::ToEnd, 0, "[salut { toi[] }]");
+    check_equal(s.begin()+7, '{', '}', ObjectFlags::ToBegin | ObjectFlags::ToEnd, 0, "{ toi[] }");
+    check_equal(s.begin() + 12, '[', ']', ObjectFlags::ToBegin | ObjectFlags::ToEnd | ObjectFlags::Inner, 0, "]");
+    check_equal(s.begin() + 14, '[', ']', ObjectFlags::ToBegin | ObjectFlags::ToEnd, 0, "[salut { toi[] }]");
+    check_equal(s.begin() + 1, '[', ']', ObjectFlags::ToBegin, 0, "[s");
+
     s = "[]";
-    {
-        auto res = find_surrounding(s, s.begin() + 1, '[', ']', ObjectFlags::ToBegin | ObjectFlags::ToEnd, 0);
-        kak_assert(res and StringView{res->first, res->second+1} == "[]");
-    }
+    check_equal(s.begin() + 1, '[', ']', ObjectFlags::ToBegin | ObjectFlags::ToEnd, 0, "[]");
+
     s = "[*][] hehe";
-    {
-        auto res = find_surrounding(s, s.begin() + 6, '[', ']', ObjectFlags::ToBegin, 0);
-        kak_assert(not res);
-    }
+    kak_assert(not find_surrounding(s, s.begin() + 6, '[', ']', ObjectFlags::ToBegin, 0));
+
     s = "begin tchou begin tchaa end end";
-    {
-        auto res = find_surrounding(s, s.begin() + 6, "begin", "end",
-                                    ObjectFlags::ToBegin | ObjectFlags::ToEnd, 0);
-        kak_assert(res and StringView{res->first, res->second+1} == s);
-    }
+    check_equal(s.begin() + 6, "begin", "end", ObjectFlags::ToBegin | ObjectFlags::ToEnd, 0, s);
 }};
 
 }

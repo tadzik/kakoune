@@ -4,8 +4,7 @@
 #include "completion.hh"
 #include "containers.hh"
 #include "exception.hh"
-#include "flags.hh"
-#include "option_types.hh"
+#include "option.hh"
 #include "vector.hh"
 
 #include <memory>
@@ -22,7 +21,7 @@ enum class OptionFlags
     Hidden = 1,
 };
 
-template<> struct WithBitOps<OptionFlags> : std::true_type {};
+constexpr bool with_bit_ops(Meta::Type<OptionFlags>) { return true; }
 
 class OptionDesc
 {
@@ -40,7 +39,7 @@ private:
     OptionFlags  m_flags;
 };
 
-class Option
+class Option : public UseMemoryDomain<MemoryDomain::Options>
 {
 public:
     virtual ~Option() = default;
@@ -71,7 +70,7 @@ protected:
 class OptionManagerWatcher
 {
 public:
-    virtual ~OptionManagerWatcher() {}
+    virtual ~OptionManagerWatcher() = default;
 
     virtual void on_option_changed(const Option& option) = 0;
 };
@@ -80,7 +79,7 @@ class OptionManager : private OptionManagerWatcher
 {
 public:
     OptionManager(OptionManager& parent);
-    ~OptionManager();
+    ~OptionManager() override;
 
     Option& operator[] (StringView name);
     const Option& operator[] (StringView name) const;
@@ -142,18 +141,6 @@ public:
     {
         if (option_add(m_value, str))
             m_manager.on_option_changed(*this);
-    }
-
-    using Alloc = Allocator<TypedOption, MemoryDomain::Options>;
-    static void* operator new (std::size_t sz)
-    {
-        kak_assert(sz == sizeof(TypedOption));
-        return Alloc{}.allocate(1);
-    }
-
-    static void operator delete (void* ptr)
-    {
-        return Alloc{}.deallocate(reinterpret_cast<TypedOption*>(ptr), 1);
     }
 private:
     virtual void validate(const T& value) const {}
@@ -233,8 +220,8 @@ public:
                 return **it;
             throw runtime_error{format("option '{}' already declared with different type or flags", name)};
         }
-        String doc =  docstring.empty() ? format("[{}]", option_type_name<T>::name())
-                                        : format("[{}] - {}", option_type_name<T>::name(), docstring);
+        String doc =  docstring.empty() ? format("[{}]", option_type_name(Meta::Type<T>{}))
+                                        : format("[{}] - {}", option_type_name(Meta::Type<T>{}), docstring);
         m_descs.emplace_back(new OptionDesc{name.str(), std::move(doc), flags});
         opts.emplace_back(new TypedCheckedOption<T, validator>{m_global_manager, *m_descs.back(), value});
         return *opts.back();

@@ -1,7 +1,7 @@
 #ifndef value_hh_INCLUDED
 #define value_hh_INCLUDED
 
-#include "unordered_map.hh"
+#include "hash_map.hh"
 #include "units.hh"
 
 #include <type_traits>
@@ -52,7 +52,7 @@ struct Value
 private:
     struct Concept
     {
-        virtual ~Concept() {}
+        virtual ~Concept() = default;
         virtual const std::type_info& type() const = 0;
     };
 
@@ -76,7 +76,7 @@ inline ValueId get_free_value_id()
     return (ValueId)(next++);
 }
 
-using ValueMap = UnorderedMap<ValueId, Value, MemoryDomain::Values>;
+using ValueMap = HashMap<ValueId, Value, MemoryDomain::Values>;
 
 }
 

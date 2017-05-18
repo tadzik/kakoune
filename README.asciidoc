@@ -1,17 +1,20 @@
-= image:{logo}[K,30,30,link="{website}"] Kakoune image:{travis-img}[link="{travis-url}"]
+= image:{logo}[K,30,30,link="{website}"] Kakoune image:{travis-img}[link="{travis-url}"] image:{irc-img}[link="{irc-url}"]
 :logo: https://rawgit.com/mawww/kakoune/master/doc/kakoune_logo.svg
 :website: http://kakoune.org
 :travis-img: https://travis-ci.org/mawww/kakoune.svg?branch=master
 :travis-url: https://travis-ci.org/mawww/kakoune
+:irc-img: https://img.shields.io/badge/IRC-%23kakoune-blue.svg
+:irc-url: https://webchat.freenode.net/?channels=kakoune
 :icons: font
 :toc: right
+:pp: ++
 
 TL;DR
 -----
 
 {website}
 
-*Vim inspired* -- *Faster as in less keystrokes* --
+*Vim inspired* -- *Faster as in fewer keystrokes* --
 *Multiple selections* -- *Orthogonal design*
 
 ---------------------------------------------
@@ -49,7 +52,7 @@ selections have an anchor and a cursor character. Most commands move both of
 them, except when extending selection where the anchor character stays fixed
 and the cursor one moves around.
 
-see http://vimeo.com/82711574
+See http://vimeo.com/82711574
 
 Join us on freenode IRC `#Kakoune`
 
@@ -99,8 +102,8 @@ Building
 
 Kakoune dependencies are:
 
- * A C\+\+11 compliant compiler (GCC >= 5 or clang >= 3.4) along with its
-   associated C\+\+ standard library (libstdc\+\+ or libc\+\+)
+ * A {cpp}11 compliant compiler (GCC >= 5 or clang >= 3.4) along with its
+   associated {cpp} standard library (libstdc{pp} or libc{pp})
  * boost (>= 1.50)
  * ncurses with wide-characters support (>= 5.3, generally referred to as libncursesw)
  * asciidoc (for the `a2k` tool), to generate man pages
@@ -122,7 +125,7 @@ its source directory, type *make install*, you can specify the `PREFIX` and
 .Homebrew (OSX)
 ====
 NOTE: The ncurses library that comes with OSX is not new enough to support some
-of the mouse based features of Kakoune (only tested on OSX 10.11.3, where the
+mouse based features of Kakoune (only tested on OSX 10.11.3, where the
 packaged ncurses library is version 5.4, whereas the latest version is 6.0).
 Currently, a fresh Kakoune install requires that you install ncurses 6.0. You
 can install ncurses 6.0 via Homebrew,
@@ -198,21 +201,6 @@ sudo zypper install kakoune
 ---------------------------------------------------------------------------------------------------
 ====
 
-[TIP]
-.Debian
-====
-There is a script in
-https://github.com/mawww/kakoune/blob/master/contrib/make_deb.bash[contrib/make_deb.bash]
-that can be used to generate a debian package for kakoune.  You can then
-install the generated .deb package with the dpkg tool.
-
---------------------------------------------------
-./make_deb.bash -e "your_email" -f "your_username"
-sudo dpkg -i thePackageName.deb
---------------------------------------------------
-
-====
-
 Running
 ~~~~~~~
 
@@ -220,7 +208,9 @@ Just running *kak* launch a new kak session with a client on local terminal.
 *kak* accepts some switches:
 
  * `-c <session>`: connect to given session, sessions are unix sockets
-       `/tmp/kak-<session>`
+       `/tmp/kakoune/<user>/<session>`, `<user>/<session>` can be used
+       as well to connect to another user's session, provided the socket
+       permissions have been changed to allow it.
  * `-e <commands>`: execute commands on startup
  * `-n`: ignore kakrc file
  * `-s <session>`: set the session name, by default it will be the pid
@@ -239,21 +229,40 @@ Just running *kak* launch a new kak session with a client on local terminal.
     - `json`: json-rpc based user interface that writes json on stdout and
         read keystrokes as json on stdin.
  * `-l`: list existing sessions, and check the dead ones
- * `-clear`: clear dead sessions socket files
+ * `-clear`: clear dead session's socket files
  * `-ro`: prevent modifications to all buffers from being saved to disk
+ * `+line[:column]`: specify a target line and column for the first file
 
-At startup, if `-n` is not specified, Kakoune will try to source the file
-`../share/kak/kakrc` relative to the kak binary. This kak file will then try
-to recursively source any files in `$XDG_CONFIG_HOME/kak/autoload` (with
-`$XDG_CONFIG_HOME` defaulting to `$HOME/.config`, and falling back to
-`../share/kak/autoload/` if that autoload directory does not exists), then
-`../share/kak/kakrc.local` if it exists, and finally `$XDG_CONFIG_HOME/kak/kakrc`.
+Configuration
+^^^^^^^^^^^^^
 
-That leads to the following behaviour: by default, with no user autoload
-directory, the system wide autoload directory is used, once the user wants
-control on autoloading, they can create an autoload directory and eventually
-symlink individual scripts, or the whole system wide autoload directory. They
-can as well add any new scripts not provided with Kakoune.
+There are two directories containing Kakoune's scripts:
+
+* `runtime`: located in `../share/kak/` relative to the `kak` binary
+  contains the system scripts, installed with Kakoune.
+* `userconf`: located in `$XDG_CONFIG_HOME/kak/`, which defaults
+  to `$HOME/.config/kak/` on most systems, containing the user
+  configuration.
+
+Unless `-n` is specified, Kakoune will load its startup script located
+at `${runtime}/kakrc` relative to the `kak` binary. This startup script
+is responsible for loading the user configuration.
+
+First, Kakoune will search recursively for `.kak` files in the `autoload`
+directory. It will first look for an `autoload` directory at
+`${userconf}/autoload` and will fallback to `${runtime}/autoload` if
+it does not exist.
+
+Once all those files are loaded, Kakoune will try to source
+`${runtime}/kakrc.local` which is expected to contain distribution provided
+configuration.
+
+And finally, the user configuration will be loaded from `${userconf}/kakrc`.
+
+NOTE: If you create a user `autoload` directory in `${userconf}/autoload`,
+the system one at `${runtime}/autoload` will not be loaded anymore. You can
+add a symbolic link to it (or to individual scripts) inside
+`${userconf}/autoload` to keep loading system scripts.
 
 Basic Interaction
 -----------------
@@ -273,14 +282,14 @@ Normal Mode
 ~~~~~~~~~~~
 
 In normal mode, keys are not inserted directly inside the buffer, but are editing
-commands. These commands provides ways to manipulate either the selections themselves,
+commands. These commands provide ways to manipulate either the selections themselves,
 or the selected text.
 
 Insert Mode
 ~~~~~~~~~~~
 
-When entering insert mode, keys are now directly inserted before each selections
-cursor. Some additional keys are recognised in insert mode:
+When entering insert mode, keys are now directly inserted before each
+selection's cursor. Some additional keys are recognised in insert mode:
 
  * `<esc>`: leave insert mode
  * `<backspace>`: delete characters before cursors
@@ -316,45 +325,47 @@ Movement
  * `w`: select the word and following whitespaces  on the right of selection end
  * `b`: select preceding whitespaces and the word on the left of selection end
  * `e`: select preceding whitespaces and the word on the right of selection end
- * `alt-[wbe]`: same as [wbe] but select WORD instead of word
+ * `<a-[wbe]>`: same as [wbe] but select WORD instead of word
 
  * `f`: select to the next occurence of given character
  * `t`: select until the next occurence of given character
- * `<alt-[ft]>`: same as [ft] but in the other direction
+ * `<a-[ft]>`: same as [ft] but in the other direction
 
  * `m`: select to matching character
  * `M`: extend selection to matching character
 
  * `x`: select line on which selection end lies (or next line when end lies on
         an end-of-line)
- * `alt-x`: expand selections to contain full lines (including end-of-lines)
- * `alt-X`: trim selections to only contain full lines (not including last
+ * `X`: similar to `x`, except the current selection is extended
+ * `<a-x>`: expand selections to contain full lines (including end-of-lines)
+ * `<a-X>`: trim selections to only contain full lines (not including last
             end-of-line)
 
  * `%`: select whole buffer
 
- * `alt-h`: select to line begin
- * `alt-l`: select to line end
+ * `<a-h>`: select to line begin
+ * `<a-l>`: select to line end
 
  * `/`: search (select next match)
- * `alt-/`: search (select previous match)
+ * `<a-/>`: search (select previous match)
  * `?`: search (extend to next match)
- * `alt-?`: search (extend to previous match)
+ * `<a-?>`: search (extend to previous match)
  * `n`: select next match
  * `N`: add a new selection with next match
- * `alt-n`: select previous match
- * `alt-N`: add a new selection with previous match
+ * `<a-n>`: select previous match
+ * `<a-N>`: add a new selection with previous match
 
  * `pageup`: scroll up
  * `pagedown`: scroll down
 
  * `'`: rotate selections (the main selection becomes the next one)
+ * `<a-'>`: rotate selections backwards
 
  * `;`: reduce selections to their cursor
- * `alt-;`: flip the selections direction
- * `alt-:`: ensure selections are in forward direction (cursor after anchor)
+ * `<a-;>`: flip the selections' direction
+ * `<a-:>`: ensure selections are in forward direction (cursor after anchor)
 
- * `alt-.`: repeat last object or `f`/`t` selection command.
+ * `<a-.>`: repeat last object or `f`/`t` selection command.
 
 
 A word is a sequence of alphanumeric characters or underscore, a WORD is a
@@ -363,7 +374,7 @@ sequence of non whitespace characters.
 Appending
 ~~~~~~~~~
 
-for most selection commands, using shift permits to extend current selection
+for most selection commands, using shift permits extending current selection
 instead of replacing it. for example, `wWW` selects 3 consecutive words
 
 Using Counts
@@ -372,8 +383,18 @@ Using Counts
 Most selection commands also support counts, which are entered before the
 command itself.
 
-for example, `3W` selects 3 consecutive words and `3w` select the third word on
+For example, `3W` selects 3 consecutive words and `3w` select the third word on
 the right of selection end.
+
+Disabling Hooks
+~~~~~~~~~~~~~~~
+
+Any normal mode command can be prefixed with `\` which will disable hook execution
+for the duration for the command (including the duration of modes the command could
+move to, so `\i` will disable hooks for the whole insert session).
+
+As autoindentation is implemented in terms of hooks, this can be used to disable
+it when pasting text.
 
 Changes
 ~~~~~~~
@@ -395,28 +416,28 @@ Changes
  * `y`: yank selections
  * `p`: paste after current selection end
  * `P`: paste before current selection begin
- * `alt-p`: paste all after current selection end, and
+ * `<a-p>`: paste all after current selection end, and
             select each pasted string.
- * `alt-P`: paste all before current selection begin, and
+ * `<a-P>`: paste all before current selection begin, and
             select each pasted string.
  * `R`: replace current selection with yanked text
 
  * `r`: replace each character with the next entered one
 
- * `alt-j`: join selected lines
- * `alt-J`: join selected lines and select spaces inserted
+ * `<a-j>`: join selected lines
+ * `<a-J>`: join selected lines and select spaces inserted
             in place of line breaks
- * `alt-m`: merge contiguous selections together (works across lines as well)
+ * `<a-m>`: merge contiguous selections together (works across lines as well)
 
- * `>`: indent selected lines
- * `alt->`: indent selected lines, including empty lines
- * `<`: deindent selected lines
- * `alt-<`: deindent selected lines, do not remove incomplete
+ * `<gt> (>)`: indent selected lines
+ * `<a-gt>`: indent selected lines, including empty lines
+ * `<lt> (<)`: deindent selected lines
+ * `<a-lt>`: deindent selected lines, do not remove incomplete
         indent (3 leading spaces when indent is 4)
 
- * `|`: pipe each selections through the given external filter program
+ * `|`: pipe each selection through the given external filter program
         and replace the selection with it's output.
- * `alt-|`: pipe each selections through the given external filter program
+ * `<a-|>`: pipe each selection through the given external filter program
         and ignore its output
 
  * `!`: insert command output before selection
@@ -429,20 +450,20 @@ Changes
 
  * `&`: align selection, align the cursor of selections by inserting
         spaces before the first character of the selection
- * `alt-&`: copy indent, copy the indentation of the main selection
+ * `<a-&>`: copy indent, copy the indentation of the main selection
         (or the count one if a count is given) to all other ones
 
  * ```: to lower case
  * `~`: to upper case
- * `alt-``: swap case
+ * `<a-`>`: swap case
 
  * `@`: convert tabs to spaces in current selections, uses the buffer
         tabstop option or the count parameter for tabstop.
- * `alt-@`: convert spaces to tabs in current selections, uses the buffer
+ * `<a-@>`: convert spaces to tabs in current selections, uses the buffer
             tabstop option or the count parameter for tabstop.
 
- * `alt-'`: rotate selections content, if specified, the count groups
-            selections, so `3<a-'>` rotate (1, 2, 3) and (3, 4, 6)
+ * `<a-">`: rotate selections content, if specified, the count groups
+            selections, so `3<a-">` rotate (1, 2, 3) and (3, 4, 6)
             independently.
 
 Goto Commands
@@ -452,6 +473,7 @@ Commands beginning with g are used to goto certain position and or buffer:
 
  * `gh`: select to line begin
  * `gl`: select to line end
+ * `gi`: select to line begin (non blank)
 
  * `gg`, `gk`: go to the first line
  * `gj`: go to the last line
@@ -493,9 +515,9 @@ By default, marks use the '^' register, but using the register can be set
 using `"<reg>` prefix.
 
 `Z` will save the current selections to the register.
-`alt-Z` will append the current selections to the register.
+`<a-Z>` will append the current selections to the register.
 `z` will restore the selections from the register.
-`alt-z` will add the selections from the register to the existing ones.
+`<a-z>` will add the selections from the register to the existing ones.
 
 Jump list
 ~~~~~~~~~
@@ -504,9 +526,9 @@ Some commands, like the goto commands, buffer switch or search commands,
 push the previous selections to the client's jump list. It is possible
 to forward or backward in the jump list using:
 
- * `control-i`: Jump forward
- * `control-o`: Jump backward
- * `control-s`: save current selections
+ * `<c-i>`: Jump forward
+ * `<c-o>`: Jump backward
+ * `<c-s>`: save current selections
 
 Multi Selection
 ~~~~~~~~~~~~~~~
@@ -517,34 +539,36 @@ One way to get a multiselection is via the `s` key.
 For example, to change all occurrences of word 'roger' to word 'marcel'
 in a paragraph, here is what can be done:
 
-select the paragraph with enough `x`. press `s` and enter roger, then enter.
-Now paragraph selection was replaced with multiselection of each roger in
-the paragraph. Press `c` and marcel<esc> to replace rogers with marcels.
+ * select the paragraph with enough `x`
+ * press `s` and enter roger, then enter
+ * now paragraph selection was replaced with multiselection of each roger in
+the paragraph
+ * press `c` and marcel<esc> to replace rogers with marcels
 
 A multiselection can also be obtained with `S`, which splits the current
 selection according to the regex entered. To split a comma separated list,
 use `S` then ', *'
 
-The regex syntax supported by Kakoune is the Perl one and is describe  
+The regex syntax supported by Kakoune is the Perl one and is described
 here <<Regex syntax>>.
 
 `s` and `S` share the search pattern with `/`, and hence entering an empty
 pattern uses the last one.
 
-As a convenience, `alt-s` allows you to split the current selections on
+As a convenience, `<a-s>` allows you to split the current selections on
 line boundaries.
 
 To clear multiple selections, use `space`. To keep only the nth selection
-use `n` followed by `space`, in order to remove a selection, use `alt-space`.
+use `n` followed by `space`, in order to remove a selection, use `<a-space>`.
 
-`alt-k` allows you to enter a regex and keep only the selections that
-contains a match for this regex. using `alt-K` you can keep the selections
+`<a-k>` allows you to enter a regex and keep only the selections that
+contains a match for this regex. Using `<a-K>` you can keep the selections
 not containing a match.
 
 `C` copies the current selection to the next line (or lines if a count is given)
-`alt-C` does the same to previous lines.
+`<a-C>` does the same to previous lines.
 
-`$` allows you to enter a shell command and pipe each selections to it.
+`$` allows you to enter a shell command and pipe each selection to it.
 Selections whose shell command returns 0 will be kept, other will be dropped.
 
 Object Selection
@@ -552,9 +576,9 @@ Object Selection
 
 Some keys allow you to select a text object:
 
- * `alt-a`: selects the whole object
- * `alt-i`: selects the inner object, that is the object excluding it's surrounder.
-            for example, for a quoted string, this will not select the quote, and
+ * `<a-a>`: selects the whole object
+ * `<a-i>`: selects the inner object, that is the object excluding its surrounder.
+            For example, for a quoted string, this will not select the quote, and
             for a word this will not select trailing spaces.
  * `[`: selects to object start
  * `]`: selects to object end
@@ -593,7 +617,7 @@ When pressing `:` in normal mode, Kakoune will open a prompt to enter a command.
 Commands are used for non editing tasks, such as opening a buffer, writing the
 current one, quitting, etc.
 
-A few keys are recognized by prompt mode to help editing a command:
+A few keys are recognized by prompt mode to help edit a command:
 
  * `<ret>`: validate prompt
  * `<esc>`: abandon without
@@ -601,7 +625,7 @@ A few keys are recognized by prompt mode to help editing a command:
  * `<left> or <a-h>`: move cursor to previous character
  * `<right> or <a-l>`: move cursor to previous character
  * `<home>`: move cursor to first character
- * `<end>`: move cursor to passed last character
+ * `<end>`: move cursor past the last character
  * `<backspace> or <a-x>`: erase character before cursor
  * `<del> or <a-d>`: erase character under cursor
 
@@ -639,9 +663,11 @@ command `q!` has to be used).
      displays the available topics.
  * `e[dit][!] <filename> [<line> [<column>]]`: open buffer on file, go to given
      line and column. If file is already opened, just switch to this file.
-     use edit! to force reloading.
- * `w[rite] [<filename>]`: write buffer to <filename> or use it's name if
-     filename is not given.
+     Use edit! to force reloading.
+ * `w[rite][!] [<filename>]`: write buffer to <filename> or use its name if
+     filename is not given. If the file is write-protected, its
+     permissions are temporarily changed to allow saving the buffer and
+     restored afterwards when the write! command is used.
  * `w[rite]a[ll]`: write all buffers that are associated to a file.
  * `q[uit][!]`: exit Kakoune, use quit! to force quitting even if there is some
      unsaved buffers remaining.
@@ -653,8 +679,6 @@ command `q!` has to be used).
  * `b[uffer]p[rev]`: switch to the previous buffer
  * `d[el]b[uf][!] [<name>]`: delete the buffer <name>
  * `source <filename>`: execute commands in <filename>
- * `runtime <filename>`: execute commands in <filename>, <filename>
-     is relative to kak executable path.
  * `colorscheme <name>`: load named colorscheme.
  * `rename-client <name>`: set current client name
  * `rename-buffer <name>`: set current buffer name
@@ -694,11 +718,11 @@ Kakoune support three string syntax:
  * `%{strings}`: these strings are very useful when entering commands
 
    - the `{` and `}` delimiters are configurable: you can use any non
-     alphanumeric character. like `%[string]`, `%<string>`, `%(string)`,
-     `%\~string~` or `%!string!`...
+     alphanumeric character, e.g. `%[string]`, `%<string>`, `%(string)`,
+     `%\~string~`, `%!string!`.
    - if the character following the % is one of {[(<, then the closing one is
      the matching }])> and the delimiters are not escapable but are nestable.
-     for example `%{ roger {}; }` is a valid string, `%{ marcel \}` as well.
+     For example `%{ roger {}; }` is a valid string, `%{ marcel \}` as well.
 
 Expansions
 ^^^^^^^^^^
@@ -707,7 +731,7 @@ A special kind of `%{strings}` can be used, with a type between
 `%` and the opening delimiter (which cannot be alphanumeric). These
 strings are expanded according to their type.
 
-For example `%opt{autoinfo}` is of type 'opt'. opt expansions are replaced
+For example `%opt{autoinfo}` is of type 'opt'. 'opt' expansions are replaced
 by the value of the given option (here `autoinfo`).
 
 Supported types are:
@@ -723,7 +747,7 @@ Supported types are:
  * `arg`: argument expansion, gives access to the arguments of the current
      command, the content can be a number, or `@` for all arguments.
 
-for example you can display last search pattern with
+For example, you can display last search pattern with
 
 -------------
 :echo %reg{/}
@@ -736,7 +760,7 @@ The `%sh{...}` expansion replaces its content with the output of the shell
 commands in it. It is similar to the shell $(...) syntax and is evaluated
 only when needed.
 
-for example: `%sh{ ls }` is replaced with the output of the ls command.
+For example: `%sh{ ls }` is replaced with the output of the ls command.
 
 Some of Kakoune state is available through environment variables:
 
@@ -756,9 +780,9 @@ Some of Kakoune state is available through environment variables:
  * `kak_count`: count parameter passed to the command
  * `kak_opt_<name>`: value of option <name>
  * `kak_reg_<r>`: value of register <r>
- * `kak_socket`: filename of session socket (/tmp/kak-<session>)
  * `kak_session`: name of the current session
  * `kak_client`: name of current client
+ * `kak_source`: path of the file currently getting executed (through the source command)
  * `kak_cursor_line`: line of the end of the main selection
  * `kak_cursor_column`: column of the end of the main selection (in byte)
  * `kak_cursor_char_column`: column of the end of the main selection (in character)
@@ -766,15 +790,16 @@ Some of Kakoune state is available through environment variables:
  * `kak_window_width`: width of the current kakoune window
  * `kak_window_height`: height of the current kakoune window
  * `kak_hook_param`: filtering text passed to the currently executing hook
+ * `kak_hook_param_capture_N`: text captured by the hook filter regex capture N
  * `kak_client_env_<name>`: value of the <name> variable in the client environment.
 	Example: $kak_client_env_SHELL is the SHELL variable
 
 Note that in order to make only needed information available, Kakoune needs
 to find the environment variable reference in the shell script executed.
-Hence `%sh{ ./script.sh }` with `script.sh` referencing an environment
+Hence, `%sh{ ./script.sh }` with `script.sh` referencing an environment
 variable will not work.
 
-For example you can print informations on the current file in the status
+For example, you can print informations on the current file in the status
 line using:
 
 -------------------------------
@@ -803,7 +828,7 @@ will source additional files:
 If the `$XDG_CONFIG_HOME/kak/autoload` directory exists, load every
 `*.kak` files in it, and load recursively any subdirectory.
 
-If it does not exists, falls back to the site wide autoload directory
+If it does not exist, falls back to the site wide autoload directory
 in `../share/kak/autoload/`.
 
 After that, if it exists, source the `$XDG_CONFIG_HOME/kak/kakrc` file
@@ -819,7 +844,7 @@ Color Schemes
 Kakoune ships with some color schemes that are installed to
 `../share/kak/colors/`. If `$XDG_CONFIG_HOME/kak/colors/` is present
 the builtin command `colorscheme` will offer completion for those
-color schemes. If a scheme is duplicated in userspace it will take
+color schemes. If a scheme is duplicated in userspace, it will take
 precedence.
 
 Options
@@ -838,10 +863,13 @@ Options are typed, their type can be
  * `{int,str}-list`: a list, elements are separated by a colon (:)
   if an element needs to contain a colon, it can be escaped with a
   backslash.
- * `range-faces`: a `:` separated list of a pairs of a buffer range
+ * `range-faces`: a `:` separated list of a pair of a buffer range
    (`<begin line>.<begin column>,<end line>.<end column>` or
    `<begin line>.<end line>+<length>`) and  a face (separated by `|`),
    except for the first element which is just the timestamp of the buffer.
+ * `line-flags`: a `:` separated list of a line number and a corresponding
+    flag (`<line>|<flag text>`), except for the first element which is just
+    the timestamp of the buffer.
  * `completions`: a `:` separated list of `<text>|<docstring>|<menu text>`
    candidates, except for the first element which follows the
    `<line>.<column>[+<length>]@<timestamp>` format to define where the
@@ -864,11 +892,11 @@ context (interactive edition for example), then the window value
 in the context), and if not we use the global value.
 
 That means that two windows on the same buffer can use different options
-(like different filetype, or different tabstop). However some options
+(like different filetype, or different tabstop). However, some options
 might end up ignored if their scope is not in the command context:
 
 Writing a file never uses the window options for example, so any
-options related to writing wont be taken into account if set in the
+options related to writing won't be taken into account if set in the
 window scope (`BOM` or `eolformat` for example).
 
 New options can be declared using the `:decl` command:
@@ -877,10 +905,10 @@ New options can be declared using the `:decl` command:
 :decl [-hidden] <type> <name> [<value>]
 ---------------------------------------
 
-the `-hidden` parameter makes the option invisible in completion, but
+The `-hidden` parameter makes the option invisible in completion, but
 still modifiable.
 
-Some options are built in Kakoune, and can be used to control it's behaviour:
+Some options are built in Kakoune, and can be used to control its behaviour:
 
  * `tabstop` _int_: width of a tab character.
  * `indentwidth` _int_: width (in spaces) used for indentation.
@@ -891,7 +919,7 @@ Some options are built in Kakoune, and can be used to control it's behaviour:
    writing a buffer, this is autodetected on load; values of this option
    assigned to the `window` scope are ignored
  * `BOM` _enum(none|utf8)_: define if the file should be written
-   with an unicode byte order mark. Values of this option assigned to the
+   with a unicode byte order mark. Values of this option assigned to the
    `window` scope are ignored
  * `readonly` _bool_: prevent modifications from being saved to disk, all
    buffers if set to `true` in the `global` scope, or current buffer if set in
@@ -903,17 +931,17 @@ Some options are built in Kakoune, and can be used to control it's behaviour:
    box in the enabled contexts.
  * `autoshowcompl` _bool_: automatically display possible completions when
    editing a prompt.
- * `ignored_files` _regex_: filenames matching this regex wont be considered
+ * `ignored_files` _regex_: filenames matching this regex won't be considered
    as candidates on filename completion (except if the text being completed
    already matches it).
- * `disabled_hooks` _regex_: hooks whose group matches this regex wont be
+ * `disabled_hooks` _regex_: hooks whose group matches this regex won't be
    executed. For example indentation hooks can be disabled with '.*-indent'.
  * `filetype` _str_: arbitrary string defining the type of the file
    filetype dependant actions should hook on this option changing for
    activation/deactivation.
  * `path` _str-list_: directories to search for gf command.
  * `completers` _str-list_: completion systems to use for insert mode
-   completion. given completers are tried in order until one generate some
+   completion. The given completers are tried in order until one generate some
    completion candidates. Existing completers are:
    - `word=all` or `word=buffer` which complete using words in all buffers
      (`word=all`) or only the current one (`word=buffer`)
@@ -936,7 +964,10 @@ Some options are built in Kakoune, and can be used to control it's behaviour:
    on the filesystem.
  * `modelinefmt` _string_: A format string used to generate the mode line, that
    string is first expanded as a command line would be (expanding `%...{...}`
-   strings), then markup tags are applied (see <<Markup strings>>).
+   strings), then markup tags are applied (see <<Markup strings>>). Two special
+   atom are available as markup: `{{mode_info}}` with information about the current
+   mode (example `insert 3 sel`), and `{{context_info}}` with information such as 
+   if the file has been modified (with `[+]`), or if it is new (with `[new file]`).
  * `ui_options`: colon separated list of key=value pairs that are forwarded to
    the user interface implementation. The NCurses UI support the following options:
    - `ncurses_set_title`: if `yes` or `true`, the terminal emulator title will
@@ -944,17 +975,12 @@ Some options are built in Kakoune, and can be used to control it's behaviour:
    - `ncurses_status_on_top`: if `yes`, or `true` the status line will be placed
      at the top of the terminal rather than at the bottom.
    - `ncurses_assistant`: specify the nice assistant you get in info boxes, can
-      be 'clippy' (the default), 'cat' or 'none'
+      be 'clippy' (the default), 'cat', 'dilbert' or 'none'
    - `ncurses_enable_mouse`: boolean option that enables mouse support
+   - `ncurses_change_colors`: boolean option that can disable color palette
+     changing if the terminfo enables it but the terminal does not support it.
    - `ncurses_wheel_down_button` and `ncurses_wheel_up_button`: specify which
       button send for wheel down/up events.
-   - `ncurses_buffer_padding_str`: string that will be used to mark the
-      end of the buffer.
-   - `ncurses_buffer_padding_type`: if set to `fill`, the padding string
-      will fill the entire space between the end of the buffer and the
-      bottom of the current window, if set to `single` the padding
-      string will be inserted once at the end of the buffer. A value of
-      `off` disables any kind of padding.
 
 Faces
 -----
@@ -982,9 +1008,9 @@ fg_color and bg_color can be:
  * `default`, which keeps the existing color
  * An rgb color: `rgb:RRGGBB`, with RRGGBB the hexadecimal value of the color.
 
-not specifying bg_color uses `default`
+Not specifying bg_color uses `default`
 
-attributes is a string of letters each defining an attributes:
+`attributes` is a string of letters each defining an attribute:
 
  * `u`: Underline
  * `r`: Reverse
@@ -1007,11 +1033,13 @@ There are some builtins faces used by internal Kakoune functionalities:
  * `PrimaryCursor`: cursor of the primary selection
  * `SecondaryCursor`: cursor of the secondary selection
  * `LineNumbers`: face used by the number_lines highlighter
- * `LineNumberAbsolute`: face used to highlight the line number of the main
+ * `LineNumberCursor`: face used to highlight the line number of the main
      selection
+ * `LineNumbersWrapped`: face used to highlight the line number of wrapped
+     lines
  * `MenuForeground`: face for the selected element in menus
  * `MenuBackground`: face for the not selected elements in menus
- * `Information`: face for the informations windows and information messages
+ * `Information`: face for the information windows and information messages
  * `Error`: face of error messages
  * `StatusLine`: face used for the status line
  * `StatusCursor`: face used for the status line cursor
@@ -1019,6 +1047,7 @@ There are some builtins faces used by internal Kakoune functionalities:
  * `MatchingChar`: face used by the show_matching highlighter
  * `Search`: face used to highlight search results
  * `BufferPadding`: face applied on the characters that follow the last line of a buffer
+ * `Whitespace`: face used by the show_whitespaces highlighter
 
 Advanced topics
 ---------------
@@ -1035,11 +1064,11 @@ can have their default register overridden by using the `"` key followed by the
 register. For example `"sy` will yank (`y` command) in the `s` register. `"sp`
 will paste from the `s` register.
 
-While in insert mode or in a prompt, `ctrl-r` followed by a register name
+While in insert mode or in a prompt, `<c-r>` followed by a register name
 (one character) inserts it.
 
-For example, `ctrl-r` followed by " will insert the currently yanked text.
-`ctrl-r` followed by 2 will insert the second capture group from the last regex
+For example, `<c-r>` followed by " will insert the currently yanked text.
+`<c-r>` followed by 2 will insert the second capture group from the last regex
 selection.
 
 Registers are lists, instead of simply text in order to interact well with
@@ -1048,7 +1077,7 @@ multiselection. Each selection has its own captures or yank buffer.
 Alternate names
 ^^^^^^^^^^^^^^^
 
-non alphanumeric registers have an alternative name that can be used
+Non alphanumeric registers have an alternative name that can be used
 in contexts where only alphanumeric identifiers are possible.
 
 Special registers
@@ -1091,7 +1120,7 @@ Using the `*` key, you can set the search pattern to the current selection.
 This tries to be intelligent. It will for example detect if the current selection
 begins and/or ends at word boundaries and set the search pattern accordingly.
 
-with `alt-*` you can set the search pattern to the current selection without
+With `<a-*>` you can set the search pattern to the current selection without
 Kakoune trying to be smart.
 
 Regex syntax
@@ -1104,9 +1133,9 @@ http://www.boost.org/doc/libs/release/libs/regex/doc/html/boost_regex/syntax/per
 Exec and Eval
 ~~~~~~~~~~~~~
 
-the `:exec` and `:eval` commands can be used for running Kakoune commands.
+The `:exec` and `:eval` commands can be used for running Kakoune commands.
 `:exec` runs keys as if they were pressed, whereas `:eval` executes its given
-paremeters as if they were entered in the command prompt. By default,
+parameters as if they were entered in the command prompt. By default,
 they do their execution in the context of the current client.
 
 These two commands also save the following registers, who are then restored
@@ -1122,7 +1151,7 @@ Some parameters provide a way to change the context of execution:
      the client. This permits to make some modification to the buffer
      without modifying the user's selection.
  * `-itersel` (requires `-draft`): execute once per selection, in a
-     context with only the considered selection. This permits to avoid
+     context with only the considered selection. This permits avoiding
      cases where the selections may get merged.
  * `-buffer <names>`: execute in the context of each buffers in the
      comma separated list <names>, '*' as a name can be used to iterate
@@ -1148,13 +1177,13 @@ Insert mode completion
 Kakoune can propose completions while inserting text, the `completers` option
 controls automatic completion, which kicks in when a certain idle timeout is
 reached (100 milliseconds). Insert mode completion can be explicitly triggered
-using *control-x*, followed, by:
+using `<c-x>`, followed, by:
 
  * *f* : filename completion
  * *w* : buffer word completion
  * *l* : buffer line completion
 
-Completion candidates can be selected using `ctrl-n` and `ctrl-p`.
+Completion candidates can be selected using `<c-n>` and `<c-p>`.
 
 Escape to normal mode
 ~~~~~~~~~~~~~~~~~~~~~
@@ -1168,7 +1197,7 @@ command. This provides a few advantages:
    left (if possible).
 
  * The modes are nested: that means the normal mode can enter prompt (with `:`),
-   or any other modes (using `:onkey` or `:menu` for example), and these modes
+   or any other modes (using `:on-key` or `:menu` for example), and these modes
    will get back to the insert mode afterwards.
 
 This feature is tailored for scripting/macros, as it provides a more predictable
@@ -1181,65 +1210,66 @@ Highlighters
 Manipulation of the displayed text is done through highlighters, which can be added
 or removed with the command
 
------------------------------------------------------
-:addhl <highlighter_name> <highlighter_parameters...>
------------------------------------------------------
+---------------------------------------------------------------
+:add-highlighter <highlighter_name> <highlighter_parameters...>
+---------------------------------------------------------------
 
 and
 
-----------------------
-:rmhl <highlighter_id>
-----------------------
+------------------------------------
+:remove-highlighter <highlighter_id>
+------------------------------------
 
 `highlighter_id` is a name generated by the highlighter specified with `highlighter_name`,
-possibly dependent on the parameters. Use command completion on rmhl to see the existing
-highlighters id.
+possibly dependent on the parameters. Use command completion on remove-highlighter to see the existing
+highlighters' id.
 
-general highlighters are:
+General highlighters are:
 
  * `regex <ex> <capture_id>:<face>...`: highlight a regex, takes the regex as
        first parameter, followed by any number of face parameters.
-       For example: `:addhl regex (\hTODO:)?[^\n] 0:cyan 1:yellow,red`
+       For example: `:add-highlighter regex (\hTODO:)?[^\n] 0:cyan 1:yellow,red`
        will highlight C++ style comments in cyan, with an eventual 'TODO:' in
        yellow on red background.
  * `dynregex`: Similar to regex, but expand (like a command parameter would) the
        given expression before building a regex from the result.
- * `flag_lines <flag> <option_name>`: add a column in front of text, and display the
-       given flag in it for everly line contained in the int-list option named
-       <option_name>.
- * `show_matching`: highlight matching char of the character under the selections
+ * `flag_lines <face> <option_name>`: add a column in front of the buffer,
+       and display the flags specified in <option_name>, using <face>
+ * `show_matching`: highlight matching char of the character under the selections'
        cursor using `MatchingChar` face.
- * `number_lines \<-relative> \<-hlcursor> \<-separator <separator text> >`: show line numbers.
+ * `show_whitespaces \<-tab <separator> \<-tabpad <separator> \<-lf <separator> \<-spc <separator> \<-nbsp <separator>`: display symbols on top of whitespaces to make them more explicit using the Whitespace face.
+ * `number_lines \<-relative> \<-hlcursor> \<-separator <separator text>`: show line numbers.
        The -relative switch will show line numbers relative to the main cursor line, the
        -hlcursor switch will highlight the cursor line with a separate face. With the
        -separator switch one can specify a string to separate the line numbers column with
        the rest of the buffer, default is `|`.
+ * `wrap \<-word>`: Soft wrap buffer content to window width, wrap at word boundaries if `-word` is specified.
  * `fill <face>`: fill using given face, mostly useful with <<regions-highlighters,Regions highlighters>>
  * `ranges <option_name>`: use the data in the range-faces option of the given name to highlight the buffer.
 
 Highlighting Groups
 ^^^^^^^^^^^^^^^^^^^
 
-the `group` highlighter is a container for other highlighters. You can add
+The `group` highlighter is a container for other highlighters. You can add
 a group to the current window using
 
-------------------
-addhl group <name>
-------------------
+----------------------------
+add-highlighter group <name>
+----------------------------
 
-and then the `-group` switch of `addhl` provides a mean to add highlighters
+and then the `-group` switch of `add-highlighter` provides a mean to add highlighters
 inside this group.
 
---------------------------------------
-addhl -group <name> <type> <params>...
---------------------------------------
-
-groups can contain other groups, the `-group` switch can be used to define a path.
-
 ------------------------------------------------
-addhl -group <name> group <subname>
-addhl -group <name>/<subname> <type> <params>...
+add-highlighter -group <name> <type> <params>...
 ------------------------------------------------
+
+Groups can contain other groups, the `-group` switch can be used to define a path.
+
+----------------------------------------------------------
+add-highlighter -group <name> group <subname>
+add-highlighter -group <name>/<subname> <type> <params>...
+----------------------------------------------------------
 
 [[regions-highlighters]]
 Regions highlighters
@@ -1262,7 +1292,7 @@ A region is defined by 4 parameters:
 
 `recurse` is useful for regions that can be nested, for example the `%sh{ ... }`
 construct in kakoune accept nested `{ ... }` so `%sh{ ... { ... } ... }` is valid.
-this region can be defined with:
+This region can be defined with:
 
 ------------------------
 shell_expand %sh\{ \} \{
@@ -1271,19 +1301,19 @@ shell_expand %sh\{ \} \{
 Regions are used in the `regions` highlighter which can take any number
 of regions.
 
------------------------------------------------------------------------
-addhl regions <name> <region_name1> <opening1> <closing1> <recurse1>  \
+---------------------------------------------------------------------------------
+add-highlighter regions <name> <region_name1> <opening1> <closing1> <recurse1>  \
                      <region_name2> <opening2> <closing2> <recurse2>...
------------------------------------------------------------------------
+---------------------------------------------------------------------------------
 
-defines multiple regions in which other highlighters can be added
+The above command defines multiple regions in which other highlighters can be added as follows:
 
--------------------------------------
-addhl -group <name>/<region_name> ...
--------------------------------------
+-----------------------------------------------
+add-highlighter -group <name>/<region_name> ...
+-----------------------------------------------
 
 Regions are matched using the left-most rule: the left-most region opening starts
-a new region. when a region closes, the closest next opening start another region.
+a new region. When a region closes, the closest next opening start another region.
 
 That matches the rule governing most programming language parsing.
 
@@ -1294,13 +1324,13 @@ Most programming languages can then be properly highlighted using a `regions`
 highlighter as root:
 
 -----------------------------------------------------------------
-addhl regions -default code <lang> \
+add-highlighter regions -default code <lang> \
     string <str_opening> <str_closing> <str_recurse> \
     comment <comment_opening> <comment_closing> <comment_recurse>
 
-addhl -group <lang>/code ...
-addhl -group <lang>/string ...
-addhl -group <lang>/comment ...
+add-highlighter -group <lang>/code ...
+add-highlighter -group <lang>/string ...
+add-highlighter -group <lang>/comment ...
 -----------------------------------------------------------------
 
 Shared Highlighters
@@ -1309,30 +1339,30 @@ Shared Highlighters
 Highlighters are often defined for a specific filetype, and it makes then sense to
 share the highlighters between all the windows on the same filetypes.
 
-A shared highlighter can be defined with the `:addhl` command
+A shared highlighter can be defined with the `:add-highlighter` command
 
-------------------------------
-addhl -group /<group_name> ...
-------------------------------
+----------------------------------------
+add-highlighter -group /<group_name> ...
+----------------------------------------
 
-when the group switch values starts with a '/', it references a group in the
+When the group switch values starts with a '/', it references a group in the
 shared highlighters, rather than the window highlighters.
 
 The common case would be to create a named shared group, and then fill it
 with highlighters:
 
----------------------------
-addhl -group / group <name>
-addhl -group /name regex ...
----------------------------
+--------------------------------------
+add-highlighter -group / group <name>
+add-highlighter -group /name regex ...
+--------------------------------------
 
 It can then be referenced in a window using the `ref` highlighter.
 
-----------------
-addhl ref <name>
-----------------
+--------------------------
+add-highlighter ref <name>
+--------------------------
 
-the `ref` can reference any named highlighter in the shared namespace.
+The `ref` can reference any named highlighter in the shared namespace.
 
 Hooks
 ~~~~~
@@ -1354,20 +1384,20 @@ called.
 For example to automatically use line numbering with .cc files,
 use the following command:
 
------------------------------------------------------
-:hook global WinCreate .*\.cc %{ addhl number_lines }
------------------------------------------------------
+---------------------------------------------------------------
+:hook global WinCreate .*\.cc %{ add-highlighter number_lines }
+---------------------------------------------------------------
 
-if `<group>` is given, make this hook part of the named group. groups
-are used for removing hooks with the `rmhooks` command
+If `<group>` is given, make this hook part of the named group. groups
+are used for removing hooks with the `remove-hooks` command:
 
------------------------
-rmhooks <scope> <group>
------------------------
+----------------------------
+remove-hooks <scope> <group>
+----------------------------
 
-will remove every hooks in `<scope>` that are part of the given group.
+The above remove every hooks in `<scope>` that are part of the given group.
 
-existing hooks are:
+Existing hooks are:
 
  * `NormalIdle`: A certain duration has passed since last key was pressed in
        normal mode.
@@ -1381,6 +1411,8 @@ existing hooks are:
  * `InsertKey`: A key is received in insert mode, the key is used for filtering
  * `InsertChar`: A character is inserted in insert mode, the character is used
        for filtering
+ * `InsertDelete`: A character is deleted in insert mode, the character deleted
+       by the main selection is used for filtering
  * `InsertMove`: The cursor moved (without inserting) in insert mode, the key
        that triggered the move is used for filtering
  * `WinCreate`: A window was created, the filtering text is the buffer name
@@ -1392,9 +1424,9 @@ existing hooks are:
        is '<option_name>=<new_value>'
  * `BufSetOption`: An option was set in a buffer context, the filtering text
        is '<option_name>=<new_value>'
- * `BufNew`: A buffer for a new file has been created, filename is used for
-       filtering
- * `BufOpen`: A buffer for an existing file has been created, filename is
+ * `BufNewFile`: A buffer for a new file has been created, filename is used
+       for filtering
+ * `BufOpenFile`: A buffer for an existing file has been created, filename is
        used for filtering
  * `BufCreate`: A buffer has been created, filename is used for filtering
  * `BufWritePre`: Executed just before a buffer is written, filename is
@@ -1408,37 +1440,43 @@ existing hooks are:
  * `BufCloseFifo`: Executed when a fifo buffer closes its fifo file descriptor
        either because the buffer is being deleted, or because the writing
        end has been closed.
- * `RuntimeError`: an error was encountered while executing an user command
+ * `RuntimeError`: an error was encountered while executing a user command
        the error message is used for filtering
  * `KakBegin`: Kakoune started, this is called just after reading the user
        configuration files
  * `KakEnd`: Kakoune is quitting.
  * `FocusIn`: On supported clients, triggered when the client gets focused.
-       the filtering text is the client name.
+       The filtering text is the client name.
  * `FocusOut`: On supported clients, triggered when the client gets unfocused.
-       the filtering text is the client name.
+       The filtering text is the client name.
  * `InsertCompletionShow`: Triggered when the insert completion menu gets
        displayed.
  * `InsertCompletionHide`: Triggered when the insert completion menu gets
        hidden.
+ * `RawKey`: Triggered whenever a key is pressed by the user, the key is
+       used for filtering.
 
 When not specified, the filtering text is an empty string.
 
 Key Mapping
 ~~~~~~~~~~~
 
-You can redefine a key's meaning using the map command
+You can redefine a key's meaning using the map command:
 
 --------------------------------
 :map <scope> <mode> <key> <keys>
 --------------------------------
 
-with `scope` being one of `global`, `buffer` or `window` (or any prefix),
-mode being `insert`, `normal`, `prompt`, `menu` or `user` (or any prefix), `key` being
-a single key name and `keys` a list of keys.
+`scope` can be one of `global`, `buffer` or `window` (or any prefix),
+mode one of `insert`, `normal`, `prompt`, `menu` or `user` (or any prefix),
+`key` a single key name and `keys` a list of keys.
 
-`user` mode allows for user mapping behind the `,` key. Keys will be executed in
-normal mode.
+`user` mode allows for user mapping behind the `,` key. Keys will be
+executed in normal mode.
+
+An optional *-docstring* switch followed by a string can be used to
+describe what the mapping does. This docstring will be used in autoinfo
+boxes.
 
 Mappings can be removed with the unmap command
 
@@ -1460,7 +1498,7 @@ New commands can be defined using the `:def` command.
 
 `<commands>` is a string containing the commands to execute.
 
-`def` can also takes some flags:
+`def` can also take some flags:
 
  * `-params <num>`: the command accept <num> parameters, with <num>
     either a number, or of the form <min>..<max>, with both <min> and
@@ -1479,7 +1517,7 @@ New commands can be defined using the `:def` command.
  * `-hidden`: do not show the command in command name completions
  * `-docstring`: define the documentation string for the command
 
-Using shell expansion permits to define complex commands or to access
+Using shell expansion permits defining complex commands or accessing
 Kakoune state:
 
 ------------------------------------------------------
@@ -1488,23 +1526,22 @@ Kakoune state:
 
 Some helper commands can be used to define composite commands:
 
- * `prompt <prompt> <register> <command>`: Prompt the user for a string, when
-     the user validates, store the result in given <register> and run <commmand>.
-     the -init <str> switch allows setting initial content and -password allow
-     not to show the entered text (and clears the register after command execution).
- * `onkey <register> <command>`: Wait for next key from user, writes it into given
-     <register> and execute commands.
+ * `prompt <prompt> <command>`: prompt the user for a string, when the user validates,
+     executes <command>. The entered text is available in the `text` value
+     accessible through `$kak_text` in shells or `%val{text}` in commands.
+ * `on-key <command>`: wait for next key from user, then execute <command>,
+     the key is available through the `key` value, accessible through `$kak_key`.
  * `menu <label1> <commands1> <label2> <commands2>...`: display a menu using
      labels, the selected label's commands are executed.
      `menu` can take a -auto-single argument, to automatically run commands
-     when only one choice is provided. and a -select-cmds argument, in which
+     when only one choice is provided. And a -select-cmds argument, in which
      case menu takes three argument per item, the last one being a command
      to execute when the item is selected (but not validated).
  * `info <text>`: display text in an information box, at can take a -anchor
      option, which accepts `left`, `right` and `cursor` as value, in order to
      specify where the info box should be anchored relative to the main selection.
  * `try <commands> catch <on_error_commands>`: prevent an error in <commands>
-     from aborting the whole commands execution, execute <on_error_commands>
+     from aborting the command execution, execute <on_error_commands>
      instead. If nothing is to be done on error, the catch part can be ommitted.
  * `reg <name> <content>`: set register <name> to <content>
  * `select <anchor_line>.<anchor_column>,<cursor_line>.<cursor_column>:...`:
@@ -1520,26 +1557,25 @@ Aliases
 
 With `:alias` commands can be given additional names. Aliases are scoped, so
 that an alias can refer to one command for a buffer, and to another for another
-buffer.
+buffer. The following command defines `<alias>` as an alias for `<command>`:
 
 --------------------------------
 :alias <scope> <alias> <command>
 --------------------------------
 
-with `<scope>` being `global`, `buffer` or `window`, will define `<alias>` as
-an alias for `<command>`
+`<scope>` can be one of `global`, `buffer` or `window`.
 
 -------------------------------------
 :unalias <scope> <alias> [<expected>]
 -------------------------------------
 
-will remove the given alias in the given scope. If `<expected>` is specified
+Will remove the given alias in the given scope. If `<expected>` is specified
 the alias will only be removed if its current value is `<expected>`.
 
 FIFO Buffer
 ~~~~~~~~~~~
 
-the `:edit` command can take a `-fifo` parameter:
+The `:edit` command can take a `-fifo` parameter:
 
 ---------------------------------------------
 :edit -fifo <filename> [-scroll] <buffername>
@@ -1549,21 +1585,21 @@ In this case, a buffer named `<buffername>` is created which reads its content
 from fifo `<filename>`. When the fifo is written to, the buffer is automatically
 updated.
 
-if the `-scroll` switch is specified, the initial cursor position will be made
+If the `-scroll` switch is specified, the initial cursor position will be made
 such as the window displaying the buffer will scroll as new data is read.
 
 This is very useful for running some commands asynchronously while displaying
 their result in a buffer. See `rc/make.kak` and `rc/grep.kak` for examples.
 
 When the buffer is deleted, the fifo will be closed, so any program writing
-to it will receive `SIGPIPE`. This is usefull as it permits to stop the writing
+to it will receive `SIGPIPE`. This is useful as it permits to stop the writing
 program when the buffer is deleted.
 
 Menus
 ~~~~~
 
-When a menu is displayed, you can use `j`, `<ctrl-n>` or `<tab>` to select the next
-entry, and `k`, `<ctrl-p>` or `<shift-tab>` to select the previous one.
+When a menu is displayed, you can use `j`, `<c-n>` or `<tab>` to select the next
+entry, and `k`, `<c-p>` or `<shift-tab>` to select the previous one.
 
 Using the `/` key, you can enter some regex in order to restrict available choices
 to the matching ones.

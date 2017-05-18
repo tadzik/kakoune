@@ -3,14 +3,14 @@
 
 #include "clock.hh"
 #include "coord.hh"
-#include "flags.hh"
+#include "enum.hh"
 #include "safe_ptr.hh"
 #include "scope.hh"
 #include "shared_string.hh"
 #include "value.hh"
 #include "vector.hh"
 
-#include <time.h>
+#include <ctime>
 
 namespace Kakoune
 {
@@ -21,7 +21,7 @@ enum class EolFormat
     Crlf
 };
 
-constexpr Array<EnumDesc<EolFormat>, 2> enum_desc(EolFormat)
+constexpr Array<EnumDesc<EolFormat>, 2> enum_desc(Meta::Type<EolFormat>)
 {
     return { {
         { EolFormat::Lf, "lf" },
@@ -35,7 +35,7 @@ enum class ByteOrderMark
     Utf8
 };
 
-constexpr Array<EnumDesc<ByteOrderMark>, 2> enum_desc(ByteOrderMark)
+constexpr Array<EnumDesc<ByteOrderMark>, 2> enum_desc(Meta::Type<ByteOrderMark>)
 {
     return { {
         { ByteOrderMark::None, "none" },
@@ -55,7 +55,9 @@ public:
     using difference_type = ssize_t;
     using pointer = const value_type*;
     using reference = const value_type&;
-    using iterator_category = std::random_access_iterator_tag;
+    // computing the distance between two iterator can be
+    // costly, so this is not strictly random access
+    using iterator_category = std::bidirectional_iterator_tag;
 
     BufferIterator() : m_buffer(nullptr) {}
     BufferIterator(const Buffer& buffer, BufferCoord coord);
@@ -113,12 +115,13 @@ public:
         Debug    = 1 << 5,
         ReadOnly = 1 << 6,
     };
+    friend constexpr bool with_bit_ops(Meta::Type<Flags>) { return true; }
 
     Buffer(String name, Flags flags, StringView data = {},
            timespec fs_timestamp = InvalidTime);
     Buffer(const Buffer&) = delete;
     Buffer& operator= (const Buffer&) = delete;
-    ~Buffer();
+    ~Buffer() override;
 
     Flags flags() const { return m_flags; }
     Flags& flags() { return m_flags; }
@@ -141,6 +144,7 @@ public:
     size_t         current_history_id() const noexcept;
 
     String         string(BufferCoord begin, BufferCoord end) const;
+    StringView     substr(BufferCoord begin, BufferCoord end) const;
 
     const char&    byte_at(BufferCoord c) const;
     ByteCount      distance(BufferCoord begin, BufferCoord end) const;
@@ -175,8 +179,8 @@ public:
     // returns nearest valid coordinates from given ones
     BufferCoord clamp(BufferCoord coord) const;
 
-    BufferCoord offset_coord(BufferCoord coord, CharCount offset);
-    BufferCoordAndTarget offset_coord(BufferCoordAndTarget coord, LineCount offset);
+    BufferCoord offset_coord(BufferCoord coord, CharCount offset, ColumnCount tabstop);
+    BufferCoordAndTarget offset_coord(BufferCoordAndTarget coord, LineCount offset, ColumnCount tabstop);
 
     const String& name() const { return m_name; }
     const String& display_name() const { return m_display_name; }
@@ -247,17 +251,17 @@ private:
     String m_display_name;
     Flags  m_flags;
 
-    using  UndoGroup = Vector<Modification, MemoryDomain::BufferMeta>;
+    using UndoGroup = Vector<Modification, MemoryDomain::BufferMeta>;
 
     struct HistoryNode : SafeCountable, UseMemoryDomain<MemoryDomain::BufferMeta>
     {
         HistoryNode(size_t id, HistoryNode* parent);
 
-        size_t id;
-        SafePtr<HistoryNode> parent;
         UndoGroup undo_group;
         Vector<std::unique_ptr<HistoryNode>, MemoryDomain::BufferMeta> childs;
+        SafePtr<HistoryNode> parent;
         SafePtr<HistoryNode> redo_child;
+        size_t id;
         TimePoint timepoint;
     };
 
@@ -279,8 +283,6 @@ private:
     // observable state
     mutable ValueMap m_values;
 };
-
-template<> struct WithBitOps<Buffer::Flags> : std::true_type {};
 
 }
 

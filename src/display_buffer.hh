@@ -6,15 +6,13 @@
 #include "coord.hh"
 #include "string.hh"
 #include "vector.hh"
+#include "hash_map.hh"
 
 namespace Kakoune
 {
 
 class Buffer;
 struct BufferRange{ BufferCoord begin, end; };
-
-String option_to_string(BufferRange range);
-void option_from_string(StringView str, BufferRange& opt);
 
 inline bool operator==(const BufferRange& lhs, const BufferRange& rhs)
 {
@@ -151,7 +149,7 @@ private:
     AtomList  m_atoms;
 };
 
-DisplayLine parse_display_line(StringView line);
+DisplayLine parse_display_line(StringView line, const HashMap<String, DisplayLine>& builtins = {});
 
 class DisplayBuffer : public UseMemoryDomain<MemoryDomain::Display>
 {

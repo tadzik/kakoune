@@ -10,35 +10,33 @@ namespace Kakoune
 
 using WordList = Vector<StringView>;
 
-static WordList get_words(StringView content, StringView extra_word_chars)
+static WordList get_words(StringView content, ConstArrayView<Codepoint> extra_word_chars)
 {
     WordList res;
-    using Utf8It = utf8::iterator<const char*>;
-    const char* word_start = content.begin();
-    bool in_word = false;
-    for (Utf8It it{word_start, content}, end{content.end(), content}; it != end; ++it)
+    auto is_word = [&](Codepoint c) {
+        return Kakoune::is_word(c) or contains(extra_word_chars, c);
+    };
+    for (utf8::iterator<const char*> it{content.begin(), content};
+         it != content.end(); ++it)
     {
-        Codepoint c = *it;
-        const bool word = is_word(c) or contains(extra_word_chars, c);
-        if (not in_word and word)
+        if (is_word(*it))
         {
-            word_start = it.base();
-            in_word = true;
-        }
-        else if (in_word and not word)
-        {
-            const ByteCount start = word_start - content.begin();
-            const ByteCount length = it.base() - word_start;
-            res.push_back(content.substr(start, length));
-            in_word = false;
+            const char* word = it.base(); 
+            while (++it != content.end() and is_word(*it))
+            {}
+            res.emplace_back(word, it.base());
         }
     }
     return res;
 }
 
-static StringView get_extra_word_chars(const Buffer& buffer)
+static Vector<Codepoint> get_extra_word_chars(const Buffer& buffer)
 {
-    return buffer.options()["completion_extra_word_char"].get<String>();
+    auto& str = buffer.options()["completion_extra_word_char"].get<String>();
+    Vector<Codepoint> res;
+    for (utf8::iterator<const char*> it{str.begin(), str}; it != str.end(); ++it)
+        res.push_back(*it);
+    return res;
 }
 
 void WordDB::add_words(StringView line)
@@ -46,16 +44,14 @@ void WordDB::add_words(StringView line)
     for (auto& w : get_words(line, get_extra_word_chars(*m_buffer)))
     {
         auto it = m_words.find(w);
-        if (it == m_words.end())
+        if (it != m_words.end())
+            ++it->value.refcount;
+        else
         {
             auto word = intern(w);
-            WordDB::WordInfo& info = m_words[word->strview()];
-            info.word = word;
-            info.letters = used_letters(w);
-            ++info.refcount;
+            auto view = word->strview();
+            m_words.insert({view, {std::move(word), used_letters(view), 1}});
         }
-        else
-            ++ it->second.refcount;
     }
 }
 
@@ -64,9 +60,9 @@ void WordDB::remove_words(StringView line)
     for (auto& w : get_words(line, get_extra_word_chars(*m_buffer)))
     {
         auto it = m_words.find(w);
-        kak_assert(it != m_words.end() and it->second.refcount > 0);
-        if (--it->second.refcount == 0)
-            m_words.erase(it);
+        kak_assert(it != m_words.end() and it->value.refcount > 0);
+        if (--it->value.refcount == 0)
+            m_words.unordered_remove(it->key);
     }
 }
 
@@ -77,11 +73,11 @@ WordDB::WordDB(const Buffer& buffer)
     rebuild_db();
 }
 
-WordDB::WordDB(WordDB&& other)
+WordDB::WordDB(WordDB&& other) noexcept
     : m_buffer{std::move(other.m_buffer)},
-      m_lines{std::move(other.m_lines)},
+      m_timestamp{other.m_timestamp},
       m_words{std::move(other.m_words)},
-      m_timestamp{other.m_timestamp}
+      m_lines{std::move(other.m_lines)}
 {
     kak_assert(m_buffer);
     m_buffer->options().unregister_watcher(other);
@@ -163,7 +159,7 @@ int WordDB::get_word_occurences(StringView word) const
 {
     auto it = m_words.find(word);
     if (it != m_words.end())
-        return it->second.refcount;
+        return it->value.refcount;
     return 0;
 }
 
@@ -174,7 +170,7 @@ RankedMatchList WordDB::find_matching(StringView query)
     RankedMatchList res;
     for (auto&& word : m_words)
     {
-        if (RankedMatch match{word.first, word.second.letters, query, letters})
+        if (RankedMatch match{word.key, word.value.letters, query, letters})
             res.push_back(match);
     }
 

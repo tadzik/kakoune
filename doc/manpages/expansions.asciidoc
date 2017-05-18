@@ -80,24 +80,29 @@ informations about Kakoune's state:
 	value of option *name*
 *kak_reg_<r>*::
 	value of register *r*
-*kak_socket*::
-	filename of session socket ('/tmp/kak-<session>')
 *kak_session*::
 	name of the current session
 *kak_client*::
 	name of current client
+*kak_source*::
+	path of the file currently getting executed (through the source
+	command)
 *kak_cursor_line*::
 	line of the end of the main selection
 *kak_cursor_column*::
 	column of the end of the main selection (in byte)
 *kak_cursor_char_column*::
 	column of the end of the main selection (in character)
+*kak_cursor_byte_offset*:: 
+	Offset of the main selection from the beginning of the buffer (in bytes).
 *kak_window_width*::
 	width of the current kakoune window
 *kak_window_height*::
 	height of the current kakoune window
 *kak_hook_param*::
 	filtering text passed to the currently executing hook
+*kak_hook_param_capture_N*::
+	text captured by the hook filter regex capture N
 *kak_client_env_<name>*::
 	value of the *name* variable in the client environment
 	(e.g. *$kak_client_env_SHELL* is the SHELL variable)
@@ -108,7 +113,7 @@ variable has to be spelled out within the body of the expansion
 Markup strings
 --------------
 In certain contexts, Kakoune can take a markup string, which is a string
-containing formatting informations.  In these strings, the {facename}
+containing formatting informations. In these strings, the {facename}
 syntax will enable the face facename until another face gets activated,
 or the end of the string is reached.
 

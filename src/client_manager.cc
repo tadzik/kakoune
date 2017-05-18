@@ -19,11 +19,13 @@ ClientManager::~ClientManager()
 
 void ClientManager::clear()
 {
-    m_free_windows.clear();
     // So that clients destructor find the client manager empty
     // so that local UI does not fork.
     ClientList clients = std::move(m_clients);
+    clients.clear();
     m_client_trash.clear();
+    m_free_windows.clear();
+    m_window_trash.clear();
 }
 
 String ClientManager::generate_name() const
@@ -38,7 +40,7 @@ String ClientManager::generate_name() const
 
 Client* ClientManager::create_client(std::unique_ptr<UserInterface>&& ui,
                                      EnvVarMap env_vars, StringView init_cmds,
-                                     BufferCoord init_coord)
+                                     Optional<BufferCoord> init_coord)
 {
     Buffer& buffer = BufferManager::instance().get_first_buffer();
     WindowAndSelections ws = get_free_window(buffer);
@@ -47,9 +49,12 @@ Client* ClientManager::create_client(std::unique_ptr<UserInterface>&& ui,
                                 generate_name()};
     m_clients.emplace_back(client);
 
-    auto& selections = client->context().selections_write_only();
-    selections = SelectionList(buffer, buffer.clamp(init_coord));
-    client->context().window().center_line(init_coord.line);
+    if (init_coord)
+    {
+        auto& selections = client->context().selections_write_only();
+        selections = SelectionList(buffer, buffer.clamp(*init_coord));
+        client->context().window().center_line(init_coord->line);
+    }
 
     try
     {
@@ -117,8 +122,7 @@ WindowAndSelections ClientManager::get_free_window(Buffer& buffer)
 void ClientManager::add_free_window(std::unique_ptr<Window>&& window, SelectionList selections)
 {
     window->clear_display_buffer();
-    Buffer& buffer = window->buffer();
-    m_free_windows.push_back({ std::move(window), SelectionList{ std::move(selections) }, buffer.timestamp() });
+    m_free_windows.push_back({ std::move(window), SelectionList{ std::move(selections) } });
 }
 
 void ClientManager::ensure_no_client_uses_buffer(Buffer& buffer)

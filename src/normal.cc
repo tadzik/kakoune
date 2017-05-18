@@ -12,6 +12,7 @@
 #include "file.hh"
 #include "flags.hh"
 #include "option_manager.hh"
+#include "regex.hh"
 #include "register_manager.hh"
 #include "selectors.hh"
 #include "shell_manager.hh"
@@ -39,33 +40,49 @@ void select(Context& context, T func)
     if (mode == SelectMode::Append)
     {
         auto& sel = selections.main();
-        auto res = func(buffer, sel);
-        if (res.captures().empty())
-            res.captures() = sel.captures();
-        selections.push_back(res);
-        selections.set_main_index(selections.size() - 1);
+        if (auto res = func(buffer, sel))
+        {
+            if (res->captures().empty())
+                res->captures() = sel.captures();
+            selections.push_back(std::move(*res));
+            selections.set_main_index(selections.size() - 1);
+        }
     }
     else
     {
-        for (auto& sel : selections)
+        Vector<int> to_remove;
+        for (int i = 0; i < (int)selections.size(); ++i)
         {
+            auto& sel = selections[i];
             auto res = func(buffer, sel);
+            if (not res)
+            {
+                to_remove.push_back(i);
+                continue;
+            }
+
             if (mode == SelectMode::Extend)
-                sel.merge_with(res);
+                sel.merge_with(*res);
             else
             {
-                sel.anchor() = res.anchor();
-                sel.cursor() = res.cursor();
+                sel.anchor() = res->anchor();
+                sel.cursor() = res->cursor();
             }
-            if (not res.captures().empty())
-                sel.captures() = std::move(res.captures());
+            if (not res->captures().empty())
+                sel.captures() = std::move(res->captures());
         }
+
+        if (to_remove.size() == selections.size())
+            throw runtime_error{"no selections remaining"};
+        for (auto& i : to_remove | reverse())
+            selections.remove(i);
     }
+
     selections.sort_and_merge_overlapping();
     selections.check_invariant();
 }
 
-template<SelectMode mode, Selection (*func)(const Buffer&, const Selection&)>
+template<SelectMode mode, Optional<Selection> (*func)(const Buffer&, const Selection&)>
 void select(Context& context, NormalParams)
 {
     select<mode>(context, func);
@@ -109,6 +126,49 @@ void repeat_last_select(Context& context, NormalParams)
     context.repeat_last_select();
 }
 
+struct KeyInfo
+{
+    ConstArrayView<Key> keys;
+    StringView docstring;
+};
+
+String build_autoinfo_for_mapping(Context& context, KeymapMode mode,
+                                  ConstArrayView<KeyInfo> built_ins)
+{
+    auto& keymaps = context.keymaps();
+
+    Vector<std::pair<String, StringView>> descs;
+    for (auto& built_in : built_ins)
+    {
+        String keys = join(built_in.keys |
+                           filter([&](Key k){ return not keymaps.is_mapped(k, mode); }) |
+                           transform([](Key k) { return key_to_str(k); }),
+                           ',', false);
+        if (not keys.empty())
+            descs.emplace_back(std::move(keys), built_in.docstring);
+    }
+
+    for (auto& key : keymaps.get_mapped_keys(mode))
+        descs.emplace_back(key_to_str(key),
+                           keymaps.get_mapping(key, mode).docstring);
+
+    auto max_len = 0_col;
+    for (auto& desc : descs)
+    {
+        auto len = desc.first.column_length();
+        if (len > max_len)
+            max_len = len;
+    }
+
+    String res;
+    for (auto& desc : descs)
+        res += format("{}:{}{}\n",
+                      desc.first,
+                      String{' ', max_len - desc.first.column_length() + 1},
+                      desc.second);
+    return res;
+}
+
 template<SelectMode mode>
 void goto_commands(Context& context, NormalParams params)
 {
@@ -139,6 +199,9 @@ void goto_commands(Context& context, NormalParams params)
                 break;
             case 'h':
                 select<mode, select_to_line_begin<true>>(context, {});
+                break;
+            case 'i':
+                select<mode, select_to_first_non_blank>(context, {});
                 break;
             case 'j':
                 context.push_jump();
@@ -229,17 +292,19 @@ void goto_commands(Context& context, NormalParams params)
             }
             }
         }, "goto",
-        "g,k:  buffer top        \n"
-        "l:    line end          \n"
-        "h:    line begin        \n"
-        "j:    buffer bottom     \n"
-        "e:    buffer end        \n"
-        "t:    window top        \n"
-        "b:    window bottom     \n"
-        "c:    window center     \n"
-        "a:    last buffer       \n"
-        "f:    file              \n"
-        ".:    last buffer change\n");
+        build_autoinfo_for_mapping(context, KeymapMode::Goto,
+            {{{'g','k'},"buffer top"},
+             {{'l'},    "line end"},
+             {{'h'},    "line begin"},
+             {{'i'},    "line non blank start"},
+             {{'j'},    "buffer bottom"},
+             {{'e'},    "buffer end"},
+             {{'t'},    "window top"},
+             {{'b'},    "window bottom"},
+             {{'c'},    "window center"},
+             {{'a'},    "last buffer"},
+             {{'f'},    "file"},
+             {{'.'},    "last buffer change"}}));
     }
 }
 
@@ -291,14 +356,15 @@ void view_commands(Context& context, NormalParams params)
             break;
         }
     }, "view",
-    "v,c:  center cursor (vertically)\n"
-    "m:    center cursor (horizontally)\n"
-    "t:    cursor on top   \n"
-    "b:    cursor on bottom\n"
-    "h:    scroll left     \n"
-    "j:    scroll down     \n"
-    "k:    scroll up       \n"
-    "l:    scroll right    \n");
+    build_autoinfo_for_mapping(context, KeymapMode::View,
+        {{{'v','c'}, "center cursor (vertically)"},
+         {{'m'},     "center cursor (horizontally)"},
+         {{'t'},     "cursor on top"},
+         {{'b'},     "cursor on bottom"},
+         {{'h'},     "scroll left"},
+         {{'j'},     "scroll down"},
+         {{'k'},     "scroll up"},
+         {{'l'},     "scroll right"}}));
 }
 
 void replace_with_char(Context& context, NormalParams)
@@ -306,7 +372,7 @@ void replace_with_char(Context& context, NormalParams)
     on_next_key_with_autoinfo(context, KeymapMode::None,
                              [](Key key, Context& context) {
         auto cp = key.codepoint();
-        if (not cp)
+        if (not cp or key == Key::Escape)
             return;
         ScopedEdition edition(context);
         Buffer& buffer = context.buffer();
@@ -412,7 +478,7 @@ void pipe(Context& context, NormalParams)
                 real_cmd = context.main_sel_register_value("|");
             else
             {
-                RegisterManager::instance()['|'] = cmdline.str();
+                RegisterManager::instance()['|'].set(context, cmdline.str());
                 real_cmd = cmdline;
             }
 
@@ -474,7 +540,7 @@ void insert_output(Context& context, NormalParams)
                 real_cmd = context.main_sel_register_value("|");
             else
             {
-                RegisterManager::instance()['|'] = cmdline.str();
+                RegisterManager::instance()['|'].set(context, cmdline.str());
                 real_cmd = cmdline;
             }
 
@@ -488,47 +554,10 @@ void insert_output(Context& context, NormalParams)
         });
 }
 
-template<Direction direction, SelectMode mode>
-void select_next_match(const Buffer& buffer, SelectionList& selections,
-                       const Regex& regex, bool& main_wrapped)
-{
-    const int main_index = selections.main_index();
-    bool wrapped = false;
-    if (mode == SelectMode::Replace)
-    {
-        for (int i = 0; i < selections.size(); ++i)
-        {
-            auto& sel = selections[i];
-            sel = keep_direction(find_next_match<direction>(buffer, sel, regex, wrapped), sel);
-            if (i == main_index)
-                main_wrapped = wrapped;
-        }
-    }
-    if (mode == SelectMode::Extend)
-    {
-        for (int i = 0; i < selections.size(); ++i)
-        {
-            auto& sel = selections[i];
-            sel.merge_with(find_next_match<direction>(buffer, sel, regex, wrapped));
-            if (i == main_index)
-                main_wrapped = wrapped;
-        }
-    }
-    else if (mode == SelectMode::Append)
-    {
-        auto sel = keep_direction(
-            find_next_match<direction>(buffer, selections.main(), regex, main_wrapped),
-            selections.main());
-        selections.push_back(std::move(sel));
-        selections.set_main_index(selections.size() - 1);
-    }
-    selections.sort_and_merge_overlapping();
-}
-
 void yank(Context& context, NormalParams params)
 {
     const char reg = params.reg ? params.reg : '"';
-    RegisterManager::instance()[reg] = context.selections_content();
+    RegisterManager::instance()[reg].set(context, context.selections_content());
     context.print_status({ format("yanked {} selections to register {}",
                                   context.selections().size(), reg),
                            get_face("Information") });
@@ -537,7 +566,7 @@ void yank(Context& context, NormalParams params)
 void erase_selections(Context& context, NormalParams params)
 {
     const char reg = params.reg ? params.reg : '"';
-    RegisterManager::instance()[reg] = context.selections_content();
+    RegisterManager::instance()[reg].set(context, context.selections_content());
     ScopedEdition edition(context);
     context.selections().erase();
     context.selections().avoid_eol();
@@ -546,34 +575,31 @@ void erase_selections(Context& context, NormalParams params)
 void change(Context& context, NormalParams params)
 {
     const char reg = params.reg ? params.reg : '"';
-    RegisterManager::instance()[reg] = context.selections_content();
+    RegisterManager::instance()[reg].set(context, context.selections_content());
     enter_insert_mode<InsertMode::Replace>(context, params);
 }
 
-constexpr InsertMode adapt_for_linewise(InsertMode mode)
+InsertMode adapt_for_linewise(InsertMode mode)
 {
-    return ((mode == InsertMode::Append) ?
-             InsertMode::InsertAtNextLineBegin :
-             ((mode == InsertMode::Insert) ?
-               InsertMode::InsertAtLineBegin :
-               ((mode == InsertMode::Replace) ?
-                 InsertMode::Replace : InsertMode::Insert)));
+    switch (mode)
+    {
+        case InsertMode::Append: return InsertMode::InsertAtNextLineBegin;
+        case InsertMode::Insert: return InsertMode::InsertAtLineBegin;
+        case InsertMode::Replace: return InsertMode::Replace;
+        default: return InsertMode::Insert;
+    }
 }
 
 template<InsertMode mode>
 void paste(Context& context, NormalParams params)
 {
     const char reg = params.reg ? params.reg : '"';
-    auto strings = RegisterManager::instance()[reg].values(context);
-    InsertMode effective_mode = mode;
-    for (auto& str : strings)
-    {
-        if (not str.empty() and str.back() == '\n')
-        {
-            effective_mode = adapt_for_linewise(mode);
-            break;
-        }
-    }
+    auto strings = RegisterManager::instance()[reg].get(context);
+    const bool linewise = contains_that(strings, [](StringView str) {
+        return not str.empty() and str.back() == '\n';
+    });
+    const auto effective_mode = linewise ? adapt_for_linewise(mode) : mode;
+
     ScopedEdition edition(context);
     context.selections().insert(strings, effective_mode);
 }
@@ -582,7 +608,7 @@ template<InsertMode mode>
 void paste_all(Context& context, NormalParams params)
 {
     const char reg = params.reg ? params.reg : '"';
-    auto strings = RegisterManager::instance()[reg].values(context);
+    auto strings = RegisterManager::instance()[reg].get(context);
     InsertMode effective_mode = mode;
     String all;
     Vector<ByteCount> offsets;
@@ -597,21 +623,22 @@ void paste_all(Context& context, NormalParams params)
         offsets.push_back(all.length());
     }
 
+    Vector<BufferCoord> insert_pos;
     auto& selections = context.selections();
     {
         ScopedEdition edition(context);
-        selections.insert(all, effective_mode, true);
+        selections.insert(all, effective_mode, &insert_pos);
     }
 
     const Buffer& buffer = context.buffer();
     Vector<Selection> result;
-    for (auto& selection : selections)
+    for (auto& ins_pos : insert_pos)
     {
         ByteCount pos = 0;
         for (auto offset : offsets)
         {
-            result.push_back({ buffer.advance(selection.min(), pos),
-                               buffer.advance(selection.min(), offset-1) });
+            result.emplace_back(buffer.advance(ins_pos, pos),
+                                buffer.advance(ins_pos, offset-1));
             pos = offset;
         }
     }
@@ -643,8 +670,7 @@ void regex_prompt(Context& context, String prompt, T func)
                     context.input_handler().set_prompt_face(get_face("Prompt"));
                 }
 
-                if (event == PromptEvent::Abort or
-                    (event == PromptEvent::Change and (not incsearch or str.empty())))
+                if (not incsearch and event == PromptEvent::Change)
                     return;
 
                 if (event == PromptEvent::Validate)
@@ -678,19 +704,40 @@ void search(Context& context, NormalParams params)
       : (direction == Forward ? "search:"          : "reverse search:");
 
     const char reg = to_lower(params.reg ? params.reg : '/');
-    int count = params.count;
+    const int count = params.count;
+
+    auto reg_content = RegisterManager::instance()[reg].get(context);
+    Vector<String> saved_reg{reg_content.begin(), reg_content.end()};
+    const int main_index = std::min(context.selections().main_index(), saved_reg.size()-1);
+
     regex_prompt(context, prompt.str(),
-                 [reg, count](Regex ex, PromptEvent event, Context& context) {
-                     if (ex.empty())
-                         ex = Regex{context.main_sel_register_value(reg)};
-                     else if (event == PromptEvent::Validate)
-                         RegisterManager::instance()[reg] = ex.str();
-                     if (not ex.empty() and not ex.str().empty())
+                 [reg, count, saved_reg, main_index]
+                 (Regex regex, PromptEvent event, Context& context) {
+                     if (event == PromptEvent::Abort)
                      {
-                         bool main_wrapped = false;
+                         RegisterManager::instance()[reg].set(context, saved_reg);
+                         return;
+                     }
+
+                     if (regex.empty())
+                         regex = Regex{saved_reg[main_index]};
+                     RegisterManager::instance()[reg].set(context, regex.str());
+
+                     if (not regex.empty() and not regex.str().empty())
+                     {
                          int c = count;
+                         auto& selections = context.selections();
+                         auto& buffer = context.buffer();
                          do {
-                             select_next_match<direction, mode>(context.buffer(), context.selections(), ex, main_wrapped);
+                            bool wrapped = false;
+                            for (auto& sel : selections)
+                            {
+                                if (mode == SelectMode::Replace)
+                                    sel = keep_direction(find_next_match<direction>(buffer, sel, regex, wrapped), sel);
+                                if (mode == SelectMode::Extend)
+                                    sel.merge_with(find_next_match<direction>(buffer, sel, regex, wrapped));
+                            }
+                            selections.sort_and_merge_overlapping();
                          } while (--c > 0);
                      }
                  });
@@ -703,11 +750,26 @@ void search_next(Context& context, NormalParams params)
     StringView str = context.main_sel_register_value(reg);
     if (not str.empty())
     {
-        Regex ex{str};
+        Regex regex{str};
+        auto& selections = context.selections();
+        auto& buffer = context.buffer();
         bool main_wrapped = false;
         do {
             bool wrapped = false;
-            select_next_match<direction, mode>(context.buffer(), context.selections(), ex, wrapped);
+            if (mode == SelectMode::Replace)
+            {
+                auto& sel = selections.main();
+                sel = keep_direction(find_next_match<direction>(buffer, sel, regex, wrapped), sel);
+            }
+            else if (mode == SelectMode::Append)
+            {
+                auto sel = keep_direction(
+                    find_next_match<direction>(buffer, selections.main(), regex, wrapped),
+                    selections.main());
+                selections.push_back(std::move(sel));
+                selections.set_main_index(selections.size() - 1);
+            }
+            selections.sort_and_merge_overlapping();
             main_wrapped = main_wrapped or wrapped;
         } while (--params.count > 0);
 
@@ -739,7 +801,7 @@ void use_selection_as_search_pattern(Context& context, NormalParams params)
         format("register '{}' set to '{}'", reg, patterns[sels.main_index()]),
         get_face("Information") });
 
-    RegisterManager::instance()[reg] = patterns;
+    RegisterManager::instance()[reg].set(context, patterns);
 
     // Hack, as Window do not take register state into account
     if (context.has_window())
@@ -749,14 +811,25 @@ void use_selection_as_search_pattern(Context& context, NormalParams params)
 void select_regex(Context& context, NormalParams params)
 {
     const char reg = to_lower(params.reg ? params.reg : '/');
-    unsigned capture = (unsigned)params.count;
-    auto prompt = capture ? format("select (capture {}):", (int)capture) :  "select:"_str;
+    const int capture = params.count;
+    auto prompt = capture ? format("select (capture {}):", capture) :  "select:"_str;
+
+    auto reg_content = RegisterManager::instance()[reg].get(context);
+    Vector<String> saved_reg{reg_content.begin(), reg_content.end()};
+    const int main_index = std::min(context.selections().main_index(), saved_reg.size()-1);
+
     regex_prompt(context, std::move(prompt),
-                 [reg, capture](Regex ex, PromptEvent event, Context& context) {
+                 [reg, capture, saved_reg, main_index](Regex ex, PromptEvent event, Context& context) {
+         if (event == PromptEvent::Abort)
+         {
+             RegisterManager::instance()[reg].set(context, saved_reg);
+             return;
+         }
+
         if (ex.empty())
-            ex = Regex{context.main_sel_register_value(reg)};
-        else if (event == PromptEvent::Validate)
-            RegisterManager::instance()[reg] = ex.str();
+            ex = Regex{saved_reg[main_index]};
+        RegisterManager::instance()[reg].set(context, ex.str());
+
         if (not ex.empty() and not ex.str().empty())
             select_all_matches(context.selections(), ex, capture);
     });
@@ -765,14 +838,25 @@ void select_regex(Context& context, NormalParams params)
 void split_regex(Context& context, NormalParams params)
 {
     const char reg = to_lower(params.reg ? params.reg : '/');
-    unsigned capture = (unsigned)params.count;
+    const int capture = params.count;
     auto prompt = capture ? format("split (on capture {}):", (int)capture) :  "split:"_str;
+
+    auto reg_content = RegisterManager::instance()[reg].get(context);
+    Vector<String> saved_reg{reg_content.begin(), reg_content.end()};
+    const int main_index = std::min(context.selections().main_index(), saved_reg.size()-1);
+
     regex_prompt(context, std::move(prompt),
-                 [reg, capture](Regex ex, PromptEvent event, Context& context) {
+                 [reg, capture, saved_reg, main_index](Regex ex, PromptEvent event, Context& context) {
+         if (event == PromptEvent::Abort)
+         {
+             RegisterManager::instance()[reg].set(context, saved_reg);
+             return;
+         }
+
         if (ex.empty())
-            ex = Regex{context.main_sel_register_value(reg)};
-        else if (event == PromptEvent::Validate)
-            RegisterManager::instance()[reg] = ex.str();
+            ex = Regex{saved_reg[main_index]};
+        RegisterManager::instance()[reg].set(context, ex.str());
+
         if (not ex.empty() and not ex.str().empty())
             split_selections(context.selections(), ex, capture);
     });
@@ -814,7 +898,7 @@ void join_lines_select_spaces(Context& context, NormalParams)
         {
             auto begin = buffer.iterator_at({line, buffer[line].length()-1});
             auto end = std::find_if_not(begin+1, buffer.end(), is_horizontal_blank);
-            selections.push_back({begin.coord(), (end-1).coord()});
+            selections.emplace_back(begin.coord(), (end-1).coord());
         }
     }
     if (selections.empty())
@@ -839,8 +923,8 @@ template<bool matching>
 void keep(Context& context, NormalParams)
 {
     constexpr const char* prompt = matching ? "keep matching:" : "keep not matching:";
-    regex_prompt(context, prompt, [](const Regex& ex, PromptEvent, Context& context) {
-        if (ex.empty())
+    regex_prompt(context, prompt, [](const Regex& ex, PromptEvent event, Context& context) {
+        if (ex.empty() or event == PromptEvent::Abort)
             return;
         const Buffer& buffer = context.buffer();
 
@@ -900,7 +984,7 @@ void indent(Context& context, NormalParams)
         for (auto line = std::max(last_line, sel.min().line); line < sel.max().line+1; ++line)
         {
             if (indent_empty or buffer[line].length() > 1)
-                sels.push_back({line, line});
+                sels.emplace_back(line, line);
         }
         // avoid reindenting the same line if multiple selections are on it
         last_line = sel.max().line+1;
@@ -941,12 +1025,12 @@ void deindent(Context& context, NormalParams)
                 else
                 {
                     if (deindent_incomplete and width != 0)
-                        sels.push_back({ line, BufferCoord{line, column-1} });
+                        sels.emplace_back(line, BufferCoord{line, column-1});
                     break;
                 }
                 if (width == indent_width)
                 {
-                    sels.push_back({ line, BufferCoord{line, column} });
+                    sels.emplace_back(line, BufferCoord{line, column});
                     break;
                 }
             }
@@ -984,7 +1068,7 @@ void select_object(Context& context, NormalParams params)
         static constexpr struct ObjectType
         {
             Codepoint key;
-            Selection (*func)(const Buffer&, const Selection&, int, ObjectFlags);
+            Optional<Selection> (*func)(const Buffer&, const Selection&, int, ObjectFlags);
         } selectors[] = {
             { 'w', select_word<Word> },
             { 'W', select_word<WORD> },
@@ -1061,22 +1145,23 @@ void select_object(Context& context, NormalParams params)
                                    utf8cp, utf8cp, count, flags));
         }
     }, get_title(),
-    "b,(,):  parenthesis block\n"
-    "B,{,}:  braces block     \n"
-    "r,[,]:  brackets block   \n"
-    "a,<,>:  angle block      \n"
-    "\",Q:  double quote string\n"
-    "',q:  single quote string\n"
-    "`,g:  grave quote string \n"
-    "w:    word               \n"
-    "W:    WORD               \n"
-    "s:    sentence           \n"
-    "p:    paragraph          \n"
-    "␣:    whitespaces        \n"
-    "i:    indent             \n"
-    "u:    argument           \n"
-    "n:    number             \n"
-    "::    custom object desc \n");
+    build_autoinfo_for_mapping(context, KeymapMode::Object,
+        {{{'b','(',')'}, "parenthesis block"},
+         {{'B','{','}'}, "braces block"},
+         {{'r','[',']'}, "brackets block"},
+         {{'a','<','>'}, "angle block"},
+         {{'"','Q'},     "double quote string"},
+         {{'\'','q'},    "single quote string"},
+         {{'`','g'},     "grave quote string"},
+         {{'w'},         "word"},
+         {{'W'},         "WORD"},
+         {{'s'},         "sentence"},
+         {{'p'},         "paragraph"},
+         {{' '},         "whitespaces"},
+         {{'i'},         "indent"},
+         {{'u'},         "argument"},
+         {{'n'},         "number"},
+         {{':'},         "custom object desc"}}));
 }
 
 template<Direction direction, bool half = false>
@@ -1095,12 +1180,17 @@ void copy_selections_on_next_lines(Context& context, NormalParams params)
     auto& buffer = context.buffer();
     const ColumnCount tabstop = context.options()["tabstop"].get<int>();
     Vector<Selection> result;
+    size_t main_index = 0;
     for (auto& sel : selections)
     {
+        const bool is_main = (&sel == &selections.main());
         auto anchor = sel.anchor();
         auto cursor = sel.cursor();
         ColumnCount cursor_col = get_column(buffer, tabstop, cursor);
         ColumnCount anchor_col = get_column(buffer, tabstop, anchor);
+
+        if (is_main)
+            main_index = result.size();
         result.push_back(std::move(sel));
         for (int i = 0; i < std::max(params.count, 1); ++i)
         {
@@ -1118,17 +1208,28 @@ void copy_selections_on_next_lines(Context& context, NormalParams params)
 
             if (anchor_byte != buffer[anchor_line].length() and
                 cursor_byte != buffer[cursor_line].length())
+            {
+                if (is_main)
+                    main_index = result.size();
                 result.emplace_back(BufferCoord{anchor_line, anchor_byte},
                                     BufferCoordAndTarget{cursor_line, cursor_byte, cursor.target});
+            }
         }
     }
-    selections = std::move(result);
+    selections.set(std::move(result), main_index);
     selections.sort_and_merge_overlapping();
 }
 
+template<Direction direction>
 void rotate_selections(Context& context, NormalParams params)
 {
-    context.selections().rotate_main(params.count != 0 ? params.count : 1);
+    const int count = params.count ? params.count : 1;
+    auto& selections = context.selections();
+    const int index = selections.main_index();
+    const int num = selections.size();
+    selections.set_main_index((direction == Forward) ?
+                                (index + count) % num
+                              : (index + (num - count % num)) % num);
 }
 
 void rotate_selections_content(Context& context, NormalParams params)
@@ -1145,8 +1246,10 @@ void rotate_selections_content(Context& context, NormalParams params)
         std::rotate(it, end-count, end);
         it = end;
     }
-    context.selections().insert(strings, InsertMode::Replace);
-    context.selections().rotate_main(count);
+    auto& selections = context.selections();
+    selections.insert(strings, InsertMode::Replace);
+    selections.set_main_index((selections.main_index() + count) %
+                              selections.size());
 }
 
 enum class SelectFlags
@@ -1157,7 +1260,7 @@ enum class SelectFlags
     Extend = 4
 };
 
-template<> struct WithBitOps<SelectFlags> : std::true_type {};
+constexpr bool with_bit_ops(Meta::Type<SelectFlags>) { return true; }
 
 template<SelectFlags flags>
 void select_to_next_char(Context& context, NormalParams params)
@@ -1212,7 +1315,7 @@ void replay_macro(Context& context, NormalParams params)
     if (running_macros[idx])
         throw runtime_error("recursive macros call detected");
 
-    ConstArrayView<String> reg_val = RegisterManager::instance()[reg].values(context);
+    ConstArrayView<String> reg_val = RegisterManager::instance()[reg].get(context);
     if (reg_val.empty() or reg_val[0].empty())
         throw runtime_error(format("Register '{}' is empty", reg));
 
@@ -1294,7 +1397,7 @@ void align(Context& context, NormalParams)
                 CharCount spaces = (int)(targetcol - (tabs ? (tabcol + (int)tabs * tabstop) : inscol));
                 padstr = String{ '\t', tabs } + String{ ' ', spaces };
             }
-            buffer.insert(insert_coord, std::move(padstr));
+            buffer.insert(insert_coord, padstr);
         }
         selections.update();
     }
@@ -1353,8 +1456,8 @@ void tabs_to_spaces(Context& context, NormalParams params)
             {
                 ColumnCount col = get_column(buffer, opt_tabstop, it.coord());
                 ColumnCount end_col = (col / tabstop + 1) * tabstop;
-                tabs.push_back({ it.coord() });
-                spaces.push_back(String{ ' ', end_col - col });
+                tabs.emplace_back(it.coord());
+                spaces.emplace_back(' ', end_col - col);
             }
         }
     }
@@ -1385,9 +1488,9 @@ void spaces_to_tabs(Context& context, NormalParams params)
                     ++col;
                 }
                 if ((col % tabstop) == 0)
-                    spaces.push_back({spaces_beg.coord(), (spaces_end-1).coord()});
+                    spaces.emplace_back(spaces_beg.coord(), (spaces_end-1).coord());
                 else if (spaces_end != end and *spaces_end == '\t')
-                    spaces.push_back({spaces_beg.coord(), spaces_end.coord()});
+                    spaces.emplace_back(spaces_beg.coord(), spaces_end.coord());
                 it = spaces_end;
             }
             else
@@ -1403,7 +1506,7 @@ SelectionList read_selections_from_register(char reg, Context& context)
     if (not is_basic_alpha(reg) and reg != '^')
         throw runtime_error("selections can only be saved to the '^' and alphabetic registers");
 
-    auto content = RegisterManager::instance()[reg].values(context);
+    auto content = RegisterManager::instance()[reg].get(context);
 
     if (content.size() != 1)
         throw runtime_error(format("Register {} does not contain a selections desc", reg));
@@ -1422,6 +1525,9 @@ SelectionList read_selections_from_register(char reg, Context& context)
     for (auto sel_desc : StringView{desc.begin(), arobase} | split<StringView>(':'))
         sels.push_back(selection_from_string(sel_desc));
 
+    if (sels.empty())
+        throw runtime_error(format("Register {} contains an empty selection list", reg));
+
     return {buffer, std::move(sels), timestamp};
 }
 
@@ -1433,7 +1539,10 @@ void save_selections(Context& context, NormalParams params)
         throw runtime_error("selections can only be saved to the '^' and alphabetic registers");
 
     auto gen_desc = [&] {
-        if (not add)
+        auto content = RegisterManager::instance()[reg].get(context);
+        const bool empty = content.size() == 1 and content[0].empty();
+
+        if (not add or empty)
             return selection_list_to_string(context.selections());
 
         auto selections = read_selections_from_register(reg, context);
@@ -1451,7 +1560,7 @@ void save_selections(Context& context, NormalParams params)
                          context.buffer().name(),
                          context.buffer().timestamp());
 
-    RegisterManager::instance()[reg] = desc;
+    RegisterManager::instance()[reg].set(context, desc);
 
     context.print_status({format("{} selections to register '{}'", add ? "Added" : "Saved", reg), get_face("Information")});
 }
@@ -1543,15 +1652,16 @@ void exec_user_mappings(Context& context, NormalParams params)
         if (not context.keymaps().is_mapped(key, KeymapMode::User))
             return;
 
-        auto mapping = context.keymaps().get_mapping(key, KeymapMode::User);
+        auto& mapping = context.keymaps().get_mapping(key, KeymapMode::User);
         ScopedSetBool disable_keymaps(context.keymaps_disabled());
 
         InputHandler::ScopedForceNormal force_normal{context.input_handler(), params};
 
         ScopedEdition edition(context);
-        for (auto& key : mapping)
+        for (auto& key : mapping.keys)
             context.input_handler().handle_key(key);
-    }, "user mapping", "enter user key");
+    }, "user mapping",
+    build_autoinfo_for_mapping(context, KeymapMode::User, {}));
 }
 
 template<typename T>
@@ -1583,12 +1693,11 @@ void move(Context& context, NormalParams params)
     Type offset(std::max(params.count,1));
     if (direction == Backward)
         offset = -offset;
+    const ColumnCount tabstop = context.options()["tabstop"].get<int>();
     auto& selections = context.selections();
     for (auto& sel : selections)
     {
-        auto cursor = context.has_window() ? context.window().offset_coord(sel.cursor(), offset)
-                                           : context.buffer().offset_coord(sel.cursor(), offset);
-
+        auto cursor = context.buffer().offset_coord(sel.cursor(), offset, tabstop);
         sel.anchor() = mode == SelectMode::Extend ? sel.anchor() : cursor;
         sel.cursor() = cursor;
     }
@@ -1609,8 +1718,10 @@ void keep_selection(Context& context, NormalParams p)
 {
     auto& selections = context.selections();
     const int index = p.count ? p.count-1 : selections.main_index();
-    if (index < selections.size())
-        selections = SelectionList{ selections.buffer(), std::move(selections[index]) };
+    if (index >= selections.size())
+        throw runtime_error{format("invalid selection index: {}", index)};
+
+    selections = SelectionList{ selections.buffer(), std::move(selections[index]) };
     selections.check_invariant();
 }
 
@@ -1618,13 +1729,12 @@ void remove_selection(Context& context, NormalParams p)
 {
     auto& selections = context.selections();
     const int index = p.count ? p.count-1 : selections.main_index();
-    if (selections.size() > 1 and index < selections.size())
-    {
-        selections.remove(index);
-        size_t main_index = selections.main_index();
-        if (index < main_index or main_index == selections.size())
-            selections.set_main_index(main_index - 1);
-    }
+    if (index >= selections.size())
+        throw runtime_error{format("invalid selection index: {}", index)};
+    if (selections.size() == 1)
+        throw runtime_error{"Cannot remove the last selection"};
+
+    selections.remove(index);
     selections.check_invariant();
 }
 
@@ -1671,189 +1781,187 @@ void force_redraw(Context& context, NormalParams)
     }
 }
 
-static NormalCmdDesc cmds[] =
-{
-    { 'h', "move left", move<CharCount, Backward> },
-    { 'j', "move down", move<LineCount, Forward> },
-    { 'k', "move up",  move<LineCount, Backward> },
-    { 'l', "move right", move<CharCount, Forward> },
+const HashMap<Key, NormalCmd> keymap{
+    { {'h'}, {"move left", move<CharCount, Backward>} },
+    { {'j'}, {"move down", move<LineCount, Forward>} },
+    { {'k'}, {"move up",  move<LineCount, Backward>} },
+    { {'l'}, {"move right", move<CharCount, Forward>} },
 
-    { 'H', "extend left", move<CharCount, Backward, SelectMode::Extend> },
-    { 'J', "extend down", move<LineCount, Forward, SelectMode::Extend> },
-    { 'K', "extend up", move<LineCount, Backward, SelectMode::Extend> },
-    { 'L', "extend right", move<CharCount, Forward, SelectMode::Extend> },
+    { {'H'}, {"extend left", move<CharCount, Backward, SelectMode::Extend>} },
+    { {'J'}, {"extend down", move<LineCount, Forward, SelectMode::Extend>} },
+    { {'K'}, {"extend up", move<LineCount, Backward, SelectMode::Extend>} },
+    { {'L'}, {"extend right", move<CharCount, Forward, SelectMode::Extend>} },
 
-    { 't', "select to next character", select_to_next_char<SelectFlags::None> },
-    { 'f', "select to next character included", select_to_next_char<SelectFlags::Inclusive> },
-    { 'T', "extend to next character", select_to_next_char<SelectFlags::Extend> },
-    { 'F', "extend to next character included", select_to_next_char<SelectFlags::Inclusive | SelectFlags::Extend> },
-    { alt('t'), "select to previous character", select_to_next_char<SelectFlags::Reverse> },
-    { alt('f'), "select to previous character included", select_to_next_char<SelectFlags::Inclusive | SelectFlags::Reverse> },
-    { alt('T'), "extend to previous character", select_to_next_char<SelectFlags::Extend | SelectFlags::Reverse> },
-    { alt('F'), "extend to previous character included", select_to_next_char<SelectFlags::Inclusive | SelectFlags::Extend | SelectFlags::Reverse> },
+    { {'t'}, {"select to next character", select_to_next_char<SelectFlags::None>} },
+    { {'f'}, {"select to next character included", select_to_next_char<SelectFlags::Inclusive>} },
+    { {'T'}, {"extend to next character", select_to_next_char<SelectFlags::Extend>} },
+    { {'F'}, {"extend to next character included", select_to_next_char<SelectFlags::Inclusive | SelectFlags::Extend>} },
+    { {alt('t')}, {"select to previous character", select_to_next_char<SelectFlags::Reverse>} },
+    { {alt('f')}, {"select to previous character included", select_to_next_char<SelectFlags::Inclusive | SelectFlags::Reverse>} },
+    { {alt('T')}, {"extend to previous character", select_to_next_char<SelectFlags::Extend | SelectFlags::Reverse>} },
+    { {alt('F')}, {"extend to previous character included", select_to_next_char<SelectFlags::Inclusive | SelectFlags::Extend | SelectFlags::Reverse>} },
 
-    { 'd', "erase selected text", erase_selections },
-    { 'c', "change selected text", change },
-    { 'i', "insert before selected text", enter_insert_mode<InsertMode::Insert> },
-    { 'I', "insert at line begin", enter_insert_mode<InsertMode::InsertAtLineBegin> },
-    { 'a', "insert after selected text", enter_insert_mode<InsertMode::Append> },
-    { 'A', "insert at line end", enter_insert_mode<InsertMode::AppendAtLineEnd> },
-    { 'o', "insert on new line below", enter_insert_mode<InsertMode::OpenLineBelow> },
-    { 'O', "insert on new line above", enter_insert_mode<InsertMode::OpenLineAbove> },
-    { 'r', "replace with character", replace_with_char },
+    { {'d'}, {"erase selected text", erase_selections} },
+    { {'c'}, {"change selected text", change} },
+    { {'i'}, {"insert before selected text", enter_insert_mode<InsertMode::Insert>} },
+    { {'I'}, {"insert at line begin", enter_insert_mode<InsertMode::InsertAtLineBegin>} },
+    { {'a'}, {"insert after selected text", enter_insert_mode<InsertMode::Append>} },
+    { {'A'}, {"insert at line end", enter_insert_mode<InsertMode::AppendAtLineEnd>} },
+    { {'o'}, {"insert on new line below", enter_insert_mode<InsertMode::OpenLineBelow>} },
+    { {'O'}, {"insert on new line above", enter_insert_mode<InsertMode::OpenLineAbove>} },
+    { {'r'}, {"replace with character", replace_with_char} },
 
-    { 'g', "go to location", goto_commands<SelectMode::Replace> },
-    { 'G', "extend to location", goto_commands<SelectMode::Extend> },
+    { {'g'}, {"go to location", goto_commands<SelectMode::Replace>} },
+    { {'G'}, {"extend to location", goto_commands<SelectMode::Extend>} },
 
-    { 'v', "move view", view_commands<false> },
-    { 'V', "move view (locked)", view_commands<true> },
+    { {'v'}, {"move view", view_commands<false>} },
+    { {'V'}, {"move view (locked)", view_commands<true>} },
 
-    { 'y', "yank selected text", yank },
-    { 'p', "paste after selected text", repeated<paste<InsertMode::Append>> },
-    { 'P', "paste before selected text", repeated<paste<InsertMode::Insert>> },
-    { alt('p'), "paste every yanked selection after selected text", paste_all<InsertMode::Append> },
-    { alt('P'), "paste every yanked selection before selected text", paste_all<InsertMode::Insert> },
-    { 'R', "replace selected text with yanked text", paste<InsertMode::Replace> },
-    { alt('R'), "replace selected text with yanked text", paste_all<InsertMode::Replace> },
+    { {'y'}, {"yank selected text", yank} },
+    { {'p'}, {"paste after selected text", repeated<paste<InsertMode::Append>>} },
+    { {'P'}, {"paste before selected text", repeated<paste<InsertMode::Insert>>} },
+    { {alt('p')}, {"paste every yanked selection after selected text", paste_all<InsertMode::Append>} },
+    { {alt('P')}, {"paste every yanked selection before selected text", paste_all<InsertMode::Insert>} },
+    { {'R'}, {"replace selected text with yanked text", paste<InsertMode::Replace>} },
+    { {alt('R')}, {"replace selected text with yanked text", paste_all<InsertMode::Replace>} },
 
-    { 's', "select regex matches in selected text", select_regex },
-    { 'S', "split selected text on regex matches", split_regex },
-    { alt('s'), "split selected text on line ends", split_lines },
+    { {'s'}, {"select regex matches in selected text", select_regex} },
+    { {'S'}, {"split selected text on regex matches", split_regex} },
+    { {alt('s')}, {"split selected text on line ends", split_lines} },
 
-    { '.', "repeat last insert command", repeat_last_insert },
-    { alt('.'), "repeat last object select/character find", repeat_last_select },
+    { {'.'}, {"repeat last insert command", repeat_last_insert} },
+    { {alt('.')}, {"repeat last object select/character find", repeat_last_select} },
 
-    { '%', "select whole buffer", select_whole_buffer },
+    { {'%'}, {"select whole buffer", select_whole_buffer} },
 
-    { ':', "enter command prompt", command },
-    { '|', "pipe each selection through filter and replace with output", pipe<true> },
-    { alt('|'), "pipe each selection through command and ignore output", pipe<false> },
-    { '!', "insert command output", insert_output<InsertMode::Insert> },
-    { alt('!'), "append command output", insert_output<InsertMode::Append> },
+    { {':'}, {"enter command prompt", command} },
+    { {'|'}, {"pipe each selection through filter and replace with output", pipe<true>} },
+    { {alt('|')}, {"pipe each selection through command and ignore output", pipe<false>} },
+    { {'!'}, {"insert command output", insert_output<InsertMode::Insert>} },
+    { {alt('!')}, {"append command output", insert_output<InsertMode::Append>} },
 
-    { ' ', "remove all selection except main", keep_selection },
-    { alt(' '), "remove main selection", remove_selection },
-    { ';', "reduce selections to their cursor", clear_selections },
-    { alt(';'), "swap selections cursor and anchor", flip_selections },
-    { alt(':'), "ensure selection cursor is after anchor", ensure_forward },
-    { alt('m'), "merge consecutive selections", merge_consecutive },
+    { {' '}, {"remove all selection except main", keep_selection} },
+    { {alt(' ')}, {"remove main selection", remove_selection} },
+    { {';'}, {"reduce selections to their cursor", clear_selections} },
+    { {alt(';')}, {"swap selections cursor and anchor", flip_selections} },
+    { {alt(':')}, {"ensure selection cursor is after anchor", ensure_forward} },
+    { {alt('m')}, {"merge consecutive selections", merge_consecutive} },
 
-    { 'w', "select to next word start", repeated<&select<SelectMode::Replace, select_to_next_word<Word>>> },
-    { 'e', "select to next word end", repeated<select<SelectMode::Replace, select_to_next_word_end<Word>>> },
-    { 'b', "select to previous word start", repeated<select<SelectMode::Replace, select_to_previous_word<Word>>> },
-    { 'W', "extend to next word start", repeated<select<SelectMode::Extend, select_to_next_word<Word>>> },
-    { 'E', "extend to next word end", repeated<select<SelectMode::Extend, select_to_next_word_end<Word>>> },
-    { 'B', "extend to previous word start", repeated<select<SelectMode::Extend, select_to_previous_word<Word>>> },
+    { {'w'}, {"select to next word start", repeated<&select<SelectMode::Replace, select_to_next_word<Word>>>} },
+    { {'e'}, {"select to next word end", repeated<select<SelectMode::Replace, select_to_next_word_end<Word>>>} },
+    { {'b'}, {"select to previous word start", repeated<select<SelectMode::Replace, select_to_previous_word<Word>>>} },
+    { {'W'}, {"extend to next word start", repeated<select<SelectMode::Extend, select_to_next_word<Word>>>} },
+    { {'E'}, {"extend to next word end", repeated<select<SelectMode::Extend, select_to_next_word_end<Word>>>} },
+    { {'B'}, {"extend to previous word start", repeated<select<SelectMode::Extend, select_to_previous_word<Word>>>} },
 
-    { alt('w'), "select to next WORD start", repeated<select<SelectMode::Replace, select_to_next_word<WORD>>> },
-    { alt('e'), "select to next WORD end", repeated<select<SelectMode::Replace, select_to_next_word_end<WORD>>> },
-    { alt('b'), "select to previous WORD start", repeated<select<SelectMode::Replace, select_to_previous_word<WORD>>> },
-    { alt('W'), "extend to next WORD start", repeated<select<SelectMode::Extend, select_to_next_word<WORD>>> },
-    { alt('E'), "extend to next WORD end", repeated<select<SelectMode::Extend, select_to_next_word_end<WORD>>> },
-    { alt('B'), "extend to previous WORD start", repeated<select<SelectMode::Extend, select_to_previous_word<WORD>>> },
+    { {alt('w')}, {"select to next WORD start", repeated<select<SelectMode::Replace, select_to_next_word<WORD>>>} },
+    { {alt('e')}, {"select to next WORD end", repeated<select<SelectMode::Replace, select_to_next_word_end<WORD>>>} },
+    { {alt('b')}, {"select to previous WORD start", repeated<select<SelectMode::Replace, select_to_previous_word<WORD>>>} },
+    { {alt('W')}, {"extend to next WORD start", repeated<select<SelectMode::Extend, select_to_next_word<WORD>>>} },
+    { {alt('E')}, {"extend to next WORD end", repeated<select<SelectMode::Extend, select_to_next_word_end<WORD>>>} },
+    { {alt('B')}, {"extend to previous WORD start", repeated<select<SelectMode::Extend, select_to_previous_word<WORD>>>} },
 
-    { alt('l'), "select to line end", repeated<select<SelectMode::Replace, select_to_line_end<false>>> },
-    { Key::End, "select to line end", repeated<select<SelectMode::Replace, select_to_line_end<false>>> },
-    { alt('L'), "extend to line end", repeated<select<SelectMode::Extend, select_to_line_end<false>>> },
-    { alt('h'), "select to line begin", repeated<select<SelectMode::Replace, select_to_line_begin<false>>> },
-    { Key::Home, "select to line begin", repeated<select<SelectMode::Replace, select_to_line_begin<false>>> },
-    { alt('H'), "extend to line begin", repeated<select<SelectMode::Extend, select_to_line_begin<false>>> },
+    { {alt('l')}, {"select to line end", repeated<select<SelectMode::Replace, select_to_line_end<false>>>} },
+    { {Key::End}, {"select to line end", repeated<select<SelectMode::Replace, select_to_line_end<false>>>} },
+    { {alt('L')}, {"extend to line end", repeated<select<SelectMode::Extend, select_to_line_end<false>>>} },
+    { {alt('h')}, {"select to line begin", repeated<select<SelectMode::Replace, select_to_line_begin<false>>>} },
+    { {Key::Home}, {"select to line begin", repeated<select<SelectMode::Replace, select_to_line_begin<false>>>} },
+    { {alt('H')}, {"extend to line begin", repeated<select<SelectMode::Extend, select_to_line_begin<false>>>} },
 
-    { 'x', "select line", repeated<select<SelectMode::Replace, select_line>> },
-    { 'X', "extend line", repeated<select<SelectMode::Extend, select_line>> },
-    { alt('x'), "extend selections to whole lines", select<SelectMode::Replace, select_lines> },
-    { alt('X'), "crop selections to whole lines", select<SelectMode::Replace, trim_partial_lines> },
+    { {'x'}, {"select line", repeated<select<SelectMode::Replace, select_line>>} },
+    { {'X'}, {"extend line", repeated<select<SelectMode::Extend, select_line>>} },
+    { {alt('x')}, {"extend selections to whole lines", select<SelectMode::Replace, select_lines>} },
+    { {alt('X')}, {"crop selections to whole lines", select<SelectMode::Replace, trim_partial_lines>} },
 
-    { 'm', "select to matching character", select<SelectMode::Replace, select_matching> },
-    { 'M', "extend to matching character", select<SelectMode::Extend, select_matching> },
+    { {'m'}, {"select to matching character", select<SelectMode::Replace, select_matching>} },
+    { {'M'}, {"extend to matching character", select<SelectMode::Extend, select_matching>} },
 
-    { '/', "select next given regex match", search<SelectMode::Replace, Forward> },
-    { '?', "extend with next given regex match", search<SelectMode::Extend, Forward> },
-    { alt('/'), "select previous given regex match", search<SelectMode::Replace, Backward> },
-    { alt('?'), "extend with previous given regex match", search<SelectMode::Extend, Backward> },
-    { 'n', "select next current search pattern match", search_next<SelectMode::Replace, Forward> },
-    { 'N', "extend with next current search pattern match", search_next<SelectMode::Append, Forward> },
-    { alt('n'), "select previous current search pattern match", search_next<SelectMode::Replace, Backward> },
-    { alt('N'), "extend with previous current search pattern match", search_next<SelectMode::Append, Backward> },
-    { '*', "set search pattern to main selection content", use_selection_as_search_pattern<true> },
-    { alt('*'), "set search pattern to main selection content, do not detect words", use_selection_as_search_pattern<false> },
+    { {'/'}, {"select next given regex match", search<SelectMode::Replace, Forward>} },
+    { {'?'}, {"extend with next given regex match", search<SelectMode::Extend, Forward>} },
+    { {alt('/')}, {"select previous given regex match", search<SelectMode::Replace, Backward>} },
+    { {alt('?')}, {"extend with previous given regex match", search<SelectMode::Extend, Backward>} },
+    { {'n'}, {"select next current search pattern match", search_next<SelectMode::Replace, Forward>} },
+    { {'N'}, {"extend with next current search pattern match", search_next<SelectMode::Append, Forward>} },
+    { {alt('n')}, {"select previous current search pattern match", search_next<SelectMode::Replace, Backward>} },
+    { {alt('N')}, {"extend with previous current search pattern match", search_next<SelectMode::Append, Backward>} },
+    { {'*'}, {"set search pattern to main selection content", use_selection_as_search_pattern<true>} },
+    { {alt('*')}, {"set search pattern to main selection content, do not detect words", use_selection_as_search_pattern<false>} },
 
-    { 'u', "undo", undo },
-    { 'U', "redo", redo },
-    { alt('u'), "move backward in history", move_in_history<Direction::Backward> },
-    { alt('U'), "move forward in history", move_in_history<Direction::Forward> },
+    { {'u'}, {"undo", undo} },
+    { {'U'}, {"redo", redo} },
+    { {alt('u')}, {"move backward in history", move_in_history<Direction::Backward>} },
+    { {alt('U')}, {"move forward in history", move_in_history<Direction::Forward>} },
 
-    { alt('i'), "select inner object", select_object<ObjectFlags::ToBegin | ObjectFlags::ToEnd | ObjectFlags::Inner> },
-    { alt('a'), "select whole object", select_object<ObjectFlags::ToBegin | ObjectFlags::ToEnd> },
-    { '[', "select to object start", select_object<ObjectFlags::ToBegin> },
-    { ']', "select to object end", select_object<ObjectFlags::ToEnd> },
-    { '{', "extend to object start", select_object<ObjectFlags::ToBegin, SelectMode::Extend> },
-    { '}', "extend to object end", select_object<ObjectFlags::ToEnd, SelectMode::Extend> },
-    { alt('['), "select to inner object start", select_object<ObjectFlags::ToBegin | ObjectFlags::Inner> },
-    { alt(']'), "select to inner object end", select_object<ObjectFlags::ToEnd | ObjectFlags::Inner> },
-    { alt('{'), "extend to inner object start", select_object<ObjectFlags::ToBegin | ObjectFlags::Inner, SelectMode::Extend> },
-    { alt('}'), "extend to inner object end", select_object<ObjectFlags::ToEnd | ObjectFlags::Inner, SelectMode::Extend> },
+    { {alt('i')}, {"select inner object", select_object<ObjectFlags::ToBegin | ObjectFlags::ToEnd | ObjectFlags::Inner>} },
+    { {alt('a')}, {"select whole object", select_object<ObjectFlags::ToBegin | ObjectFlags::ToEnd>} },
+    { {'['}, {"select to object start", select_object<ObjectFlags::ToBegin>} },
+    { {']'}, {"select to object end", select_object<ObjectFlags::ToEnd>} },
+    { {'{'}, {"extend to object start", select_object<ObjectFlags::ToBegin, SelectMode::Extend>} },
+    { {'}'}, {"extend to object end", select_object<ObjectFlags::ToEnd, SelectMode::Extend>} },
+    { {alt('[')}, {"select to inner object start", select_object<ObjectFlags::ToBegin | ObjectFlags::Inner>} },
+    { {alt(']')}, {"select to inner object end", select_object<ObjectFlags::ToEnd | ObjectFlags::Inner>} },
+    { {alt('{')}, {"extend to inner object start", select_object<ObjectFlags::ToBegin | ObjectFlags::Inner, SelectMode::Extend>} },
+    { {alt('}')}, {"extend to inner object end", select_object<ObjectFlags::ToEnd | ObjectFlags::Inner, SelectMode::Extend>} },
 
-    { alt('j'), "join lines", join_lines },
-    { alt('J'), "join lines and select spaces", join_lines_select_spaces },
+    { {alt('j')}, {"join lines", join_lines} },
+    { {alt('J')}, {"join lines and select spaces", join_lines_select_spaces} },
 
-    { alt('k'), "keep selections matching given regex", keep<true> },
-    { alt('K'), "keep selections not matching given regex", keep<false> },
-    { '$', "pipe each selection through shell command and keep the ones whose command succeed", keep_pipe },
+    { {alt('k')}, {"keep selections matching given regex", keep<true>} },
+    { {alt('K')}, {"keep selections not matching given regex", keep<false>} },
+    { {'$'}, {"pipe each selection through shell command and keep the ones whose command succeed", keep_pipe} },
 
-    { '<', "deindent", deindent<true> },
-    { '>', "indent", indent<false> },
-    { alt('>'), "indent, including empty lines", indent<true> },
-    { alt('<'), "deindent, not including incomplete indent", deindent<false> },
+    { {'<'}, {"deindent", deindent<true>} },
+    { {'>'}, {"indent", indent<false>} },
+    { {alt('>')}, {"indent, including empty lines", indent<true>} },
+    { {alt('<')}, {"deindent, not including incomplete indent", deindent<false>} },
 
-    { /*ctrl('i')*/Key::Tab, "jump forward in jump list",jump<Forward> }, // until we can distinguish tab a ctrl('i')
-    { ctrl('o'), "jump backward in jump list", jump<Backward> },
-    { ctrl('s'), "push current selections in jump list", push_selections },
+    { {/*ctrl('i')*/Key::Tab}, {"jump forward in jump list",jump<Forward>} }, // until we can distinguish tab a ctrl('i')
+    { {ctrl('o')}, {"jump backward in jump list", jump<Backward>} },
+    { {ctrl('s')}, {"push current selections in jump list", push_selections} },
 
-    { '\'', "rotate main selection", rotate_selections },
-    { alt('\''), "rotate selections content", rotate_selections_content },
+    { {'\''}, {"rotate main selection", rotate_selections<Forward>} },
+    { {alt('\'')}, {"rotate main selection", rotate_selections<Backward>} },
+    { {alt('"')}, {"rotate selections content", rotate_selections_content} },
 
-    { 'q', "replay recorded macro", replay_macro },
-    { 'Q', "start or end macro recording", start_or_end_macro_recording },
+    { {'q'}, {"replay recorded macro", replay_macro} },
+    { {'Q'}, {"start or end macro recording", start_or_end_macro_recording} },
 
-    { Key::Escape, "end macro recording", end_macro_recording },
+    { {Key::Escape}, {"end macro recording", end_macro_recording} },
 
-    { '`', "convert to lower case in selections", for_each_codepoint<to_lower> },
-    { '~', "convert to upper case in selections", for_each_codepoint<to_upper> },
-    { alt('`'),  "swap case in selections", for_each_codepoint<swap_case> },
+    { {'`'}, {"convert to lower case in selections", for_each_codepoint<to_lower>} },
+    { {'~'}, {"convert to upper case in selections", for_each_codepoint<to_upper>} },
+    { {alt('`')}, { "swap case in selections", for_each_codepoint<swap_case>} },
 
-    { '&', "align selection cursors", align },
-    { alt('&'), "copy indentation", copy_indent },
+    { {'&'}, {"align selection cursors", align} },
+    { {alt('&')}, {"copy indentation", copy_indent} },
 
-    { '@', "convert tabs to spaces in selections", tabs_to_spaces },
-    { alt('@'), "convert spaces to tabs in selections", spaces_to_tabs },
+    { {'@'}, {"convert tabs to spaces in selections", tabs_to_spaces} },
+    { {alt('@')}, {"convert spaces to tabs in selections", spaces_to_tabs} },
 
-    { 'C', "copy selection on next lines", copy_selections_on_next_lines<Forward> },
-    { alt('C'), "copy selection on previous lines", copy_selections_on_next_lines<Backward> },
+    { {'C'}, {"copy selection on next lines", copy_selections_on_next_lines<Forward>} },
+    { {alt('C')}, {"copy selection on previous lines", copy_selections_on_next_lines<Backward>} },
 
-    { ',', "user mappings", exec_user_mappings },
+    { {','}, {"user mappings", exec_user_mappings} },
 
-    { Key::Left,  "move left", move<CharCount, Backward> },
-    { Key::Down,  "move down", move<LineCount, Forward> },
-    { Key::Up,    "move up", move<LineCount, Backward> },
-    { Key::Right, "move right", move<CharCount, Forward> },
+    { {Key::Left}, { "move left", move<CharCount, Backward>} },
+    { {Key::Down}, { "move down", move<LineCount, Forward>} },
+    { {Key::Up}, {   "move up", move<LineCount, Backward>} },
+    { {Key::Right}, {"move right", move<CharCount, Forward>} },
 
-    { ctrl('b'), "scroll one page up", scroll<Backward > },
-    { ctrl('f'), "scroll one page down", scroll<Forward> },
-    { ctrl('u'), "scroll half a page up", scroll<Backward, true> },
-    { ctrl('d'), "scroll half a page down", scroll<Forward, true> },
+    { {ctrl('b')}, {"scroll one page up", scroll<Backward >} },
+    { {ctrl('f')}, {"scroll one page down", scroll<Forward>} },
+    { {ctrl('u')}, {"scroll half a page up", scroll<Backward, true>} },
+    { {ctrl('d')}, {"scroll half a page down", scroll<Forward, true>} },
 
-    { Key::PageUp,   "scroll one page up", scroll<Backward> },
-    { Key::PageDown, "scroll one page down", scroll<Forward> },
+    { {Key::PageUp}, {  "scroll one page up", scroll<Backward>} },
+    { {Key::PageDown}, {"scroll one page down", scroll<Forward>} },
 
-    { 'z', "restore selections from register", restore_selections<false> },
-    { alt('z'), "append selections from register", restore_selections<true> },
-    { 'Z', "save selections to register", save_selections<false> },
-    { alt('Z'), "append selections to register", save_selections<true> },
+    { {'z'}, {"restore selections from register", restore_selections<false>} },
+    { {alt('z')}, {"append selections from register", restore_selections<true>} },
+    { {'Z'}, {"save selections to register", save_selections<false>} },
+    { {alt('Z')}, {"append selections to register", save_selections<true>} },
 
-    { ctrl('l'), "force redraw", force_redraw },
+    { {ctrl('l')}, {"force redraw", force_redraw} },
 };
-
-KeyMap keymap = cmds;
 
 }

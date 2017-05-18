@@ -3,6 +3,7 @@
 #include "alias_registry.hh"
 #include "assert.hh"
 #include "context.hh"
+#include "flags.hh"
 #include "register_manager.hh"
 #include "shell_manager.hh"
 #include "utils.hh"
@@ -14,7 +15,7 @@
 namespace Kakoune
 {
 
-bool CommandManager::command_defined(const String& command_name) const
+bool CommandManager::command_defined(StringView command_name) const
 {
     return m_commands.find(command_name) != m_commands.end();
 }
@@ -47,11 +48,18 @@ namespace
 struct Reader
 {
 public:
+    Reader(StringView s) : str{s}, pos{}, coord{} {}
+
     [[gnu::always_inline]]
-    char operator*() const { return str[pos]; }
+    char operator*() const
+    {
+        kak_assert(pos < str.length());
+        return str[pos];
+    }
 
     Reader& operator++()
     {
+        kak_assert(pos < str.length());
         if (str[pos++] == '\n')
         {
             ++coord.line;
@@ -68,6 +76,7 @@ public:
     [[gnu::always_inline]]
     StringView substr_from(ByteCount start) const
     {
+        kak_assert(start <= pos);
         return str.substr(start, pos - start);
     }
 
@@ -204,6 +213,8 @@ Token parse_percent_token(Reader& reader)
     if (throw_on_unterminated and not reader)
         throw parse_error{format("expected a string delimiter after '%{}'",
                                  type_name)};
+    else if (not reader)
+        return {};
 
     Token::Type type = token_type<throw_on_unterminated>(type_name);
 
@@ -307,9 +318,11 @@ TokenList parse(StringView line)
     TokenList result;
 
     Reader reader{line};
-    while (reader)
+    while (true)
     {
         skip_blanks_and_comments(reader);
+        if (not reader)
+            break;
 
         ByteCount start = reader.pos;
         auto coord = reader.coord;
@@ -337,12 +350,14 @@ TokenList parse(StringView line)
             if (not str.empty())
                 result.emplace_back(Token::Type::Raw, start, reader.pos,
                                     coord, unescape(str, "%", '\\'));
+
+            if (reader and is_command_separator(*reader))
+                result.emplace_back(Token::Type::CommandSeparator,
+                                    reader.pos, reader.pos+1, coord);
         }
 
-        if (is_command_separator(*reader))
-            result.emplace_back(Token::Type::CommandSeparator,
-                                reader.pos, reader.pos+1, coord);
-
+        if (not reader)
+            break;
         ++reader;
     }
     return result;
@@ -386,13 +401,12 @@ String expand_impl(StringView str, const Context& context,
 String expand(StringView str, const Context& context,
               const ShellContext& shell_context)
 {
-    return expand_impl(str, context, shell_context,
-                       [](String s) { return std::move(s); });
+    return expand_impl(str, context, shell_context, [](String s){ return s; });
 }
 
 String expand(StringView str, const Context& context,
               const ShellContext& shell_context,
-              std::function<String (String)> postprocess)
+              const std::function<String (String)>& postprocess)
 {
     return expand_impl(str, context, shell_context,
                        [&](String s) { return postprocess(std::move(s)); });
@@ -405,10 +419,10 @@ struct command_not_found : runtime_error
 };
 
 CommandManager::CommandMap::const_iterator
-CommandManager::find_command(const Context& context, const String& name) const
+CommandManager::find_command(const Context& context, StringView name) const
 {
     auto alias = context.aliases()[name];
-    const String& cmd_name = alias.empty() ? name : alias.str();
+    StringView cmd_name = alias.empty() ? name : alias;
 
     return m_commands.find(cmd_name);
 }
@@ -416,12 +430,19 @@ CommandManager::find_command(const Context& context, const String& name) const
 void CommandManager::execute_single_command(CommandParameters params,
                                             Context& context,
                                             const ShellContext& shell_context,
-                                            DisplayCoord pos) const
+                                            DisplayCoord pos)
 {
     if (params.empty())
         return;
 
-    ConstArrayView<String> param_view(params.begin()+1, params.end());
+    constexpr int max_command_depth = 100;
+    if (m_command_depth > max_command_depth)
+        throw runtime_error("maximum nested command depth hit");
+
+    ++m_command_depth;
+    auto pop_cmd = on_scope_end([this] { --m_command_depth; });
+
+    ParameterList param_view(params.begin()+1, params.end());
     auto command_it = find_command(context, params[0]);
     if (command_it == m_commands.end())
         throw command_not_found(params[0]);
@@ -429,13 +450,13 @@ void CommandManager::execute_single_command(CommandParameters params,
     try
     {
         ParametersParser parameter_parser(param_view,
-                                          command_it->second.param_desc);
-        command_it->second.command(parameter_parser, context, shell_context);
+                                          command_it->value.param_desc);
+        command_it->value.command(parameter_parser, context, shell_context);
     }
     catch (runtime_error& error)
     {
         throw runtime_error(format("{}:{}: '{}' {}", pos.line+1, pos.column+1,
-                                   command_it->first, error.what()));
+                                   params[0], error.what()));
     }
 }
 
@@ -499,11 +520,11 @@ Optional<CommandInfo> CommandManager::command_info(const Context& context, Strin
         return {};
 
     CommandInfo res;
-    res.name = cmd->first;
-    if (not cmd->second.docstring.empty())
-        res.info += cmd->second.docstring + "\n";
+    res.name = cmd->key;
+    if (not cmd->value.docstring.empty())
+        res.info += cmd->value.docstring + "\n";
 
-    if (cmd->second.helper)
+    if (cmd->value.helper)
     {
         Vector<String> params;
         for (auto it = tokens.begin() + cmd_idx + 1;
@@ -515,7 +536,7 @@ Optional<CommandInfo> CommandManager::command_info(const Context& context, Strin
                 it->type() == Token::Type::RawEval)
                 params.push_back(it->content());
         }
-        String helpstr = cmd->second.helper(context, params);
+        String helpstr = cmd->value.helper(context, params);
         if (not helpstr.empty())
         {
             if (helpstr.back() != '\n')
@@ -525,13 +546,13 @@ Optional<CommandInfo> CommandManager::command_info(const Context& context, Strin
     }
 
     String aliases;
-    for (auto& alias : context.aliases().aliases_for(cmd->first))
+    for (auto& alias : context.aliases().aliases_for(cmd->key))
         aliases += " " + alias;
     if (not aliases.empty())
         res.info += "Aliases:" + aliases + "\n";
 
 
-    auto& switches = cmd->second.param_desc.switches;
+    auto& switches = cmd->value.param_desc.switches;
     if (not switches.empty())
     {
         res.info += "Switches:\n";
@@ -545,8 +566,8 @@ Completions CommandManager::complete_command_name(const Context& context,
                                                   StringView query, bool with_aliases) const
 {
     auto commands = m_commands
-            | filter([](const CommandMap::value_type& cmd) { return not (cmd.second.flags & CommandFlags::Hidden); })
-            | transform(std::mem_fn(&CommandMap::value_type::first));
+            | filter([](const CommandMap::Item& cmd) { return not (cmd.value.flags & CommandFlags::Hidden); })
+            | transform(std::mem_fn(&CommandMap::Item::key));
 
     if (not with_aliases)
         return {0, query.length(), Kakoune::complete(query, query.length(), commands)};
@@ -619,24 +640,24 @@ Completions CommandManager::complete(const Context& context,
         if (tokens[cmd_idx].type() != Token::Type::Raw)
             return Completions{};
 
-        const String& command_name = tokens[cmd_idx].content();
+        StringView command_name = tokens[cmd_idx].content();
         if (command_name != m_last_complete_command)
         {
-            m_last_complete_command = command_name;
+            m_last_complete_command = command_name.str();
             flags |= CompletionFlags::Start;
         }
 
         auto command_it = find_command(context, command_name);
         if (command_it == m_commands.end() or
-            not command_it->second.completer)
+            not command_it->value.completer)
             return Completions();
 
         Vector<String> params;
         for (auto it = tokens.begin() + cmd_idx + 1; it != tokens.end(); ++it)
             params.push_back(it->content());
         if (tok_idx == tokens.size())
-            params.push_back("");
-        Completions completions = offset_pos(command_it->second.completer(
+            params.emplace_back("");
+        Completions completions = offset_pos(command_it->value.completer(
             context, flags, params, tok_idx - cmd_idx - 1,
             cursor_pos_in_token), start);
 
@@ -667,16 +688,16 @@ Completions CommandManager::complete(const Context& context,
         return complete_command_name(context, prefix, true);
     else
     {
-        const String& command_name = params[0];
+        StringView command_name = params[0];
         if (command_name != m_last_complete_command)
         {
-            m_last_complete_command = command_name;
+            m_last_complete_command = command_name.str();
             flags |= CompletionFlags::Start;
         }
 
         auto command_it = find_command(context, command_name);
-        if (command_it != m_commands.end() and command_it->second.completer)
-            return command_it->second.completer(
+        if (command_it != m_commands.end() and command_it->value.completer)
+            return command_it->value.completer(
                 context, flags, params.subrange(1),
                 token_to_complete-1, pos_in_token);
     }

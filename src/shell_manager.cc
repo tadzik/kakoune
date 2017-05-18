@@ -7,13 +7,16 @@
 #include "event_manager.hh"
 #include "face_registry.hh"
 #include "file.hh"
+#include "flags.hh"
+#include "option.hh"
 #include "regex.hh"
 
 #include <cstring>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
-#include <stdlib.h>
+#include <fcntl.h>
+#include <cstdlib>
 
 extern char **environ;
 
@@ -24,7 +27,7 @@ ShellManager::ShellManager()
 {
     // Get a guaranteed to be POSIX shell binary
     {
-        auto size = confstr(_CS_PATH, 0, 0);
+        auto size = confstr(_CS_PATH, nullptr, 0);
         String path; path.resize(size-1, 0);
         confstr(_CS_PATH, path.data(), size);
         for (auto dir : StringView{path} | split<StringView>(':'))
@@ -168,6 +171,8 @@ std::pair<String, int> ShellManager::eval(
             close(child_stdin.write_fd());
             move(child_stdin.read_fd(), 0);
         }
+        else
+            move(open("/dev/null", O_RDONLY), 0);
 
         close(child_stdout.read_fd());
         move(child_stdout.write_fd(), 1);
@@ -179,9 +184,6 @@ std::pair<String, int> ShellManager::eval(
     child_stdin.close_read_fd();
     child_stdout.close_write_fd();
     child_stderr.close_write_fd();
-
-    write(child_stdin.write_fd(), input);
-    child_stdin.close_write_fd();
 
     auto wait_time = Clock::now();
 
@@ -206,9 +208,37 @@ std::pair<String, int> ShellManager::eval(
         {}
     };
 
+    struct PipeWriter : FDWatcher
+    {
+        PipeWriter(Pipe& pipe, StringView contents)
+            : FDWatcher(pipe.write_fd(), FdEvents::Write,
+                        [contents, &pipe](FDWatcher& watcher, FdEvents, EventMode) mutable {
+                            while (fd_writable(pipe.write_fd()))
+                            {
+                                ssize_t size = ::write(pipe.write_fd(), contents.begin(),
+                                                       (size_t)contents.length());
+                                if (size > 0)
+                                    contents = contents.substr(ByteCount{(int)size});
+                                if (size == -1 and (errno == EAGAIN or errno == EWOULDBLOCK))
+                                    return;
+                                if (size < 0 or contents.empty())
+                                {
+                                    pipe.close_write_fd();
+                                    watcher.disable();
+                                    return;
+                                }
+                            }
+                        })
+        {
+            int flags = fcntl(pipe.write_fd(), F_GETFL, 0);
+            fcntl(pipe.write_fd(), F_SETFL, flags | O_NONBLOCK);
+        }
+    };
+
     String stdout_contents, stderr_contents;
     PipeReader stdout_reader{child_stdout, stdout_contents};
     PipeReader stderr_reader{child_stderr, stderr_contents};
+    PipeWriter stdin_writer{child_stdin, input};
 
     // block SIGCHLD to make sure we wont receive it before
     // our call to pselect, that will end up blocking indefinitly.
@@ -220,7 +250,7 @@ std::pair<String, int> ShellManager::eval(
 
     int status = 0;
     // check for termination now that SIGCHLD is blocked
-    bool terminated = waitpid(pid, &status, WNOHANG);
+    bool terminated = waitpid(pid, &status, WNOHANG) != 0;
 
     using namespace std::chrono;
     static constexpr seconds wait_timeout{1};
@@ -235,13 +265,13 @@ std::pair<String, int> ShellManager::eval(
         wait_notified = true;
     }, EventMode::Urgent};
 
-    while (not terminated or
+    while (not terminated or child_stdin.write_fd() != -1 or
            ((flags & Flags::WaitForStdout) and
             (child_stdout.read_fd() != -1 or child_stderr.read_fd() != -1)))
     {
         EventManager::instance().handle_next_events(EventMode::Urgent, &orig_mask);
         if (not terminated)
-            terminated = waitpid(pid, &status, WNOHANG);
+            terminated = waitpid(pid, &status, WNOHANG) != 0;
     }
 
     if (not stderr_contents.empty())

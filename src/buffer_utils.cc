@@ -87,7 +87,7 @@ void reload_file_buffer(Buffer& buffer)
     buffer.reload(file_data, file_data.st.st_mtim);
 }
 
-Buffer* create_fifo_buffer(String name, int fd, bool scroll)
+Buffer* create_fifo_buffer(String name, int fd, Buffer::Flags flags, bool scroll)
 {
     static ValueId s_fifo_watcher_id = get_free_value_id();
 
@@ -95,12 +95,12 @@ Buffer* create_fifo_buffer(String name, int fd, bool scroll)
     Buffer* buffer = buffer_manager.get_buffer_ifp(name);
     if (buffer)
     {
-        buffer->flags() |= Buffer::Flags::NoUndo;
+        buffer->flags() |= Buffer::Flags::NoUndo | flags;
         buffer->reload({}, InvalidTime);
     }
     else
         buffer = buffer_manager.create_buffer(
-            std::move(name), Buffer::Flags::Fifo | Buffer::Flags::NoUndo);
+            std::move(name), flags | Buffer::Flags::Fifo | Buffer::Flags::NoUndo);
 
     auto watcher_deleter = [buffer](FDWatcher* watcher) {
         kak_assert(buffer->flags() & Buffer::Flags::Fifo);
@@ -128,19 +128,23 @@ Buffer* create_fifo_buffer(String name, int fd, bool scroll)
         size_t loops = 16;
         char data[buffer_size];
         const int fifo = watcher.fd();
-        ssize_t count = 0;
         do
         {
-            count = ::read(fifo, data, buffer_size);
-            auto pos = buffer->back_coord();
+            const ssize_t count = ::read(fifo, data, buffer_size);
+            if (count <= 0)
+            {
+                buffer->values().erase(fifo_watcher_id); // will delete this
+                return;
+            }
 
+            auto pos = buffer->back_coord();
             const bool prevent_scrolling = pos == BufferCoord{0,0} and not scroll;
             if (prevent_scrolling)
                 pos = buffer->next(pos);
 
             buffer->insert(pos, StringView(data, data+count));
 
-            if (count > 0 and prevent_scrolling)
+            if (prevent_scrolling)
             {
                 buffer->erase({0,0}, buffer->next({0,0}));
                 // in the other case, the buffer will have automatically
@@ -149,16 +153,13 @@ Buffer* create_fifo_buffer(String name, int fd, bool scroll)
                     buffer->insert(buffer->end_coord(), "\n");
             }
         }
-        while (--loops and count > 0 and fd_readable(fifo));
+        while (--loops and fd_readable(fifo));
 
         buffer->run_hook_in_own_context("BufReadFifo", buffer->name());
-
-        if (count <= 0)
-            buffer->values().erase(fifo_watcher_id); // will delete this
     }), std::move(watcher_deleter));
 
     buffer->values()[fifo_watcher_id] = Value(std::move(watcher));
-    buffer->flags() = Buffer::Flags::Fifo | Buffer::Flags::NoUndo;
+    buffer->flags() = flags | Buffer::Flags::Fifo | Buffer::Flags::NoUndo;
     buffer->run_hook_in_own_context("BufOpenFifo", buffer->name());
 
     return buffer;

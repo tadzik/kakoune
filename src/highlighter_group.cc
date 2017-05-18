@@ -5,21 +5,30 @@
 namespace Kakoune
 {
 
-void HighlighterGroup::highlight(const Context& context, HighlightFlags flags,
-                                 DisplayBuffer& display_buffer, BufferRange range)
+void HighlighterGroup::do_highlight(const Context& context, HighlightPass pass,
+                                    DisplayBuffer& display_buffer, BufferRange range)
 {
     for (auto& hl : m_highlighters)
-       hl.value->highlight(context, flags, display_buffer, range);
+       hl.value->highlight(context, pass, display_buffer, range);
+}
+
+void HighlighterGroup::do_compute_display_setup(const Context& context, HighlightPass pass, DisplaySetup& setup)
+{
+    for (auto& hl : m_highlighters)
+       hl.value->compute_display_setup(context, pass, setup);
 }
 
 void HighlighterGroup::add_child(HighlighterAndId&& hl)
 {
+    if ((hl.second->passes() & passes()) != hl.second->passes())
+        throw runtime_error{"Cannot add that highlighter to this group, passes dont match"};
+
     hl.first = replace(hl.first, "/", "<slash>");
 
     if (m_highlighters.contains(hl.first))
         throw runtime_error(format("duplicate id: '{}'", hl.first));
 
-    m_highlighters.append({ std::move(hl.first), std::move(hl.second) });
+    m_highlighters.insert({std::move(hl.first), std::move(hl.second)});
 }
 
 void HighlighterGroup::remove_child(StringView id)
@@ -52,9 +61,9 @@ Completions HighlighterGroup::complete_child(StringView path, ByteCount cursor_p
 
     auto candidates = complete(
         path, cursor_pos,
-        m_highlighters | filter([=](const HighlighterMap::Element& hl)
+        m_highlighters | filter([=](const HighlighterMap::Item& hl)
                                 { return not group or hl.value->has_children(); })
-                       | transform(HighlighterMap::get_id));
+                       | transform(std::mem_fn(&HighlighterMap::Item::key)));
 
     return { 0, 0, std::move(candidates) };
 }

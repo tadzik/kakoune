@@ -7,30 +7,31 @@
 #include "display_buffer.hh"
 #include "face_registry.hh"
 #include "regex.hh"
+#include "option.hh"
 
 namespace Kakoune
 {
 
 void HookManager::add_hook(StringView hook_name, String group, HookFunc hook)
 {
-    auto& hooks = m_hook[hook_name];
-    hooks.append({std::move(group), std::move(hook)});
+    auto& hooks = m_hooks[hook_name];
+    hooks.insert({std::move(group), std::move(hook)});
 }
 
 void HookManager::remove_hooks(StringView group)
 {
     if (group.empty())
         throw runtime_error("invalid id");
-    for (auto& hooks : m_hook)
+    for (auto& hooks : m_hooks)
         hooks.value.remove_all(group);
 }
 
 CandidateList HookManager::complete_hook_group(StringView prefix, ByteCount pos_in_token)
 {
     CandidateList res;
-    for (auto& list : m_hook)
+    for (auto& list : m_hooks)
     {
-        auto container = list.value | transform(decltype(list.value)::get_id);
+        auto container = list.value | transform(std::mem_fn(&decltype(list.value)::Item::key));
         for (auto& c : complete(prefix, pos_in_token, container))
         {
             if (!contains(res, c))
@@ -49,8 +50,8 @@ void HookManager::run_hook(StringView hook_name,
     if (m_parent)
         m_parent->run_hook(hook_name, param, context);
 
-    auto hook_list_it = m_hook.find(hook_name);
-    if (hook_list_it == m_hook.end())
+    auto hook_list_it = m_hooks.find(hook_name);
+    if (hook_list_it == m_hooks.end())
         return;
 
     if (contains(m_running_hooks, std::make_pair(hook_name, param)))
@@ -68,25 +69,28 @@ void HookManager::run_hook(StringView hook_name,
     auto start_time = profile ? Clock::now() : TimePoint{};
 
     auto& disabled_hooks = context.options()["disabled_hooks"].get<Regex>();
-    bool hook_error = false;
+    Vector<std::pair<String, HookFunc>> hooks_to_run;
     for (auto& hook : hook_list_it->value)
     {
-        if (not hook.key.empty() and not disabled_hooks.empty() and
-            regex_match(hook.key.begin(), hook.key.end(), disabled_hooks))
-            continue;
+        if (hook.key.empty() or disabled_hooks.empty() or
+            not regex_match(hook.key.begin(), hook.key.end(), disabled_hooks))
+            hooks_to_run.push_back({hook.key, hook.value});
+    }
 
+    bool hook_error = false;
+    for (auto& hook : hooks_to_run)
+    {
         try
         {
             if (debug_flags & DebugFlags::Hooks)
-                write_to_debug_buffer(format("hook {}/{}", hook_name, hook.key));
-
-            hook.value(param, context);
+                write_to_debug_buffer(format("hook {}/{}", hook_name, hook.first));
+            hook.second(param, context);
         }
         catch (runtime_error& err)
         {
             hook_error = true;
             write_to_debug_buffer(format("error running hook {}({})/{}: {}",
-                               hook_name, param, hook.key, err.what()));
+                               hook_name, param, hook.first, err.what()));
         }
     }
 

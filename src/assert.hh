@@ -17,12 +17,13 @@ void on_assert_failed(const char* message);
 #define TOSTRING(X) STRINGIFY(X)
 
 #ifdef KAK_DEBUG
-    #define kak_assert(...) \
+    #define kak_assert(...) do { \
         if (not (__VA_ARGS__)) \
             on_assert_failed("assert failed \"" #__VA_ARGS__ \
-                             "\" at " __FILE__ ":" TOSTRING(__LINE__))
+                             "\" at " __FILE__ ":" TOSTRING(__LINE__)); \
+    } while (false)
 #else
-    #define kak_assert(...)
+    #define kak_assert(...) do {} while(false)
 #endif
 
 

@@ -1,14 +1,15 @@
 #ifndef option_types_hh_INCLUDED
 #define option_types_hh_INCLUDED
 
+#include "array_view.hh"
+#include "coord.hh"
+#include "containers.hh"
 #include "exception.hh"
+#include "flags.hh"
+#include "hash_map.hh"
+#include "option.hh"
 #include "string.hh"
 #include "units.hh"
-#include "coord.hh"
-#include "array_view.hh"
-#include "id_map.hh"
-#include "flags.hh"
-#include "enum.hh"
 
 #include <tuple>
 #include <vector>
@@ -16,25 +17,20 @@
 namespace Kakoune
 {
 
-template<typename T, typename = void> struct option_type_name;
-template<typename T> using void_t = void;
-
 template<typename T>
-struct option_type_name<T, void_t<decltype(T::option_type_name)>>
+constexpr decltype(T::option_type_name) option_type_name(Meta::Type<T>)
 {
-    static decltype(T::option_type_name) name() { return T::option_type_name; }
-};
+    return T::option_type_name;
+}
 
 template<typename Enum>
-struct option_type_name<Enum, typename std::enable_if<std::is_enum<Enum>::value>::type>
+typename std::enable_if<std::is_enum<Enum>::value, String>::type
+option_type_name(Meta::Type<Enum>)
 {
-    static String name()
-    {
-        constexpr StringView type = WithBitOps<Enum>::value ? "flags" : "enum";
-        auto name = enum_desc(Enum{});
-        return type + "(" + join(name | transform(std::mem_fn(&EnumDesc<Enum>::name)), '|') + ")";
-    }
-};
+    constexpr StringView type = with_bit_ops(Meta::Type<Enum>{}) ? "flags" : "enum";
+    auto name = enum_desc(Meta::Type<Enum>{});
+    return type + "(" + join(name | transform(std::mem_fn(&EnumDesc<Enum>::name)), '|') + ")";
+}
 
 inline String option_to_string(int opt) { return to_string(opt); }
 inline void option_from_string(StringView str, int& opt) { opt = str_to_int(str); }
@@ -44,7 +40,7 @@ inline bool option_add(int& opt, StringView str)
     opt += val;
     return val != 0;
 }
-template<> struct option_type_name<int> { static StringView name() { return "int"; } };
+constexpr StringView option_type_name(Meta::Type<int>) { return "int"; }
 
 inline String option_to_string(size_t opt) { return to_string(opt); }
 inline void option_from_string(StringView str, size_t& opt) { opt = str_to_int(str); }
@@ -59,7 +55,7 @@ inline void option_from_string(StringView str, bool& opt)
     else
         throw runtime_error("boolean values are either true, yes, false or no");
 }
-template<> struct option_type_name<bool> { static StringView name() { return "bool"; } };
+constexpr StringView option_type_name(Meta::Type<bool>) { return "bool"; }
 
 constexpr char list_separator = ':';
 
@@ -101,13 +97,13 @@ bool option_add(Vector<T, domain>& opt, StringView str)
 }
 
 template<typename T, MemoryDomain D>
-struct option_type_name<Vector<T, D>>
+String option_type_name(Meta::Type<Vector<T, D>>)
 {
-    static String name() { return option_type_name<T>::name() + StringView{"-list"}; }
-};
+    return option_type_name(Meta::Type<T>{}) + StringView{"-list"};
+}
 
-template<typename Value, MemoryDomain domain>
-String option_to_string(const IdMap<Value, domain>& opt)
+template<typename Key, typename Value, MemoryDomain domain>
+String option_to_string(const HashMap<Key, Value, domain>& opt)
 {
     String res;
     for (auto it = begin(opt); it != end(opt); ++it)
@@ -121,8 +117,8 @@ String option_to_string(const IdMap<Value, domain>& opt)
     return res;
 }
 
-template<typename Value, MemoryDomain domain>
-void option_from_string(StringView str, IdMap<Value, domain>& opt)
+template<typename Key, typename Value, MemoryDomain domain>
+void option_from_string(StringView str, HashMap<Key, Value, domain>& opt)
 {
     opt.clear();
     for (auto& elem : split(str, list_separator, '\\'))
@@ -130,19 +126,20 @@ void option_from_string(StringView str, IdMap<Value, domain>& opt)
         Vector<String> pair_str = split(elem, '=', '\\');
         if (pair_str.size() != 2)
             throw runtime_error("map option expects key=value");
-        String key;
+        Key key;
         Value value;
         option_from_string(pair_str[0], key);
         option_from_string(pair_str[1], value);
-        opt.append({ std::move(key), std::move(value) });
+        opt.insert({ std::move(key), std::move(value) });
     }
 }
 
-template<typename T, MemoryDomain D>
-struct option_type_name<IdMap<T, D>>
+template<typename K, typename V, MemoryDomain D>
+String option_type_name(Meta::Type<HashMap<K, V, D>>)
 {
-    static String name() { return format("str-to-{}-map", option_type_name<T>::name()); }
-};
+    return format("{}-to-{}-map", option_type_name(Meta::Type<K>{}),
+                  option_type_name(Meta::Type<V>{}));
+}
 
 constexpr char tuple_separator = '|';
 
@@ -214,8 +211,9 @@ inline bool option_add(StronglyTypedNumber<RealType, ValueType>& opt,
     return val != 0;
 }
 
-template<typename T>
-bool option_add(T&, StringView str)
+struct WorstMatch { template<typename T> WorstMatch(T&&) {} };
+
+inline bool option_add(WorstMatch, StringView)
 {
     throw runtime_error("no add operation supported for this option type");
 }
@@ -236,45 +234,64 @@ inline String option_to_string(const LineAndColumn<EffectiveType, LineType, Colu
     return format("{},{}", opt.line, opt.column);
 }
 
-enum class DebugFlags
+template<typename Flags, typename = decltype(enum_desc(Meta::Type<Flags>{}))>
+EnableIfWithBitOps<Flags, String> option_to_string(Flags flags)
 {
-    None  = 0,
-    Hooks = 1 << 0,
-    Shell = 1 << 1,
-    Profile = 1 << 2,
-    Keys = 1 << 3,
-};
-
-template<>
-struct WithBitOps<DebugFlags> : std::true_type {};
-
-constexpr Array<EnumDesc<DebugFlags>, 4> enum_desc(DebugFlags)
-{
-    return { {
-        { DebugFlags::Hooks, "hooks" },
-        { DebugFlags::Shell, "shell" },
-        { DebugFlags::Profile, "profile" },
-        { DebugFlags::Keys, "keys" }
-    } };
+    constexpr auto desc = enum_desc(Meta::Type<Flags>{});
+    String res;
+    for (int i = 0; i < desc.size(); ++i)
+    {
+        if (not (flags & desc[i].value))
+            continue;
+        if (not res.empty())
+            res += "|";
+        res += desc[i].name;
+    }
+    return res;
 }
 
-template<typename P, typename T>
-struct PrefixedList
+template<typename Enum, typename = decltype(enum_desc(Meta::Type<Enum>{}))>
+EnableIfWithoutBitOps<Enum, String> option_to_string(Enum e)
 {
-    P prefix;
-    Vector<T, MemoryDomain::Options> list;
-};
-
-template<typename P, typename T>
-inline bool operator==(const PrefixedList<P, T>& lhs, const PrefixedList<P, T>& rhs)
-{
-    return lhs.prefix == rhs.prefix and lhs.list == rhs.list;
+    constexpr auto desc = enum_desc(Meta::Type<Enum>{});
+    auto it = find_if(desc, [e](const EnumDesc<Enum>& d) { return d.value == e; });
+    if (it != desc.end())
+        return it->name.str();
+    kak_assert(false);
+    return {};
 }
 
-template<typename P, typename T>
-inline bool operator!=(const PrefixedList<P, T>& lhs, const PrefixedList<P, T>& rhs)
+template<typename Flags, typename = decltype(enum_desc(Meta::Type<Flags>{}))>
+EnableIfWithBitOps<Flags> option_from_string(StringView str, Flags& flags)
 {
-    return not (lhs == rhs);
+    constexpr auto desc = enum_desc(Meta::Type<Flags>{});
+    flags = Flags{};
+    for (auto s : str | split<StringView>('|'))
+    {
+        auto it = find_if(desc, [s](const EnumDesc<Flags>& d) { return d.name == s; });
+        if (it == desc.end())
+            throw runtime_error(format("invalid flag value '{}'", s));
+        flags |= it->value;
+    }
+}
+
+template<typename Enum, typename = decltype(enum_desc(Meta::Type<Enum>{}))>
+EnableIfWithoutBitOps<Enum> option_from_string(StringView str, Enum& e)
+{
+    constexpr auto desc = enum_desc(Meta::Type<Enum>{});
+    auto it = find_if(desc, [str](const EnumDesc<Enum>& d) { return d.name == str; });
+    if (it == desc.end())
+        throw runtime_error(format("invalid enum value '{}'", str));
+    e = it->value;
+}
+
+template<typename Flags, typename = decltype(enum_desc(Meta::Type<Flags>{}))>
+EnableIfWithBitOps<Flags, bool> option_add(Flags& opt, StringView str)
+{
+    Flags res = Flags{};
+    option_from_string(str, res);
+    opt |= res;
+    return res != (Flags)0;
 }
 
 template<typename P, typename T>
@@ -297,9 +314,6 @@ inline bool option_add(PrefixedList<P, T>& opt, StringView str)
 {
     return option_add(opt.list, str);
 }
-
-template<typename T>
-using TimestampedList = PrefixedList<size_t, T>;
 
 }
 

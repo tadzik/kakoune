@@ -3,30 +3,30 @@ decl str docsclient
 decl -hidden str _manpage
 
 hook -group man-highlight global WinSetOption filetype=man %{
-    addhl group man-highlight
+    add-highlighter group man-highlight
     # Sections
-    addhl -group man-highlight regex ^\S.*?$ 0:blue
+    add-highlighter -group man-highlight regex ^\S.*?$ 0:blue
     # Subsections
-    addhl -group man-highlight regex '^ {3}\S.*?$' 0:default+b
+    add-highlighter -group man-highlight regex '^ {3}\S.*?$' 0:default+b
     # Command line options
-    addhl -group man-highlight regex '^ {7}-[^\s,]+(,\s+-[^\s,]+)*' 0:yellow
+    add-highlighter -group man-highlight regex '^ {7}-[^\s,]+(,\s+-[^\s,]+)*' 0:yellow
     # References to other manpages
-    addhl -group man-highlight regex [-a-zA-Z0-9_.]+\(\d\) 0:green
+    add-highlighter -group man-highlight regex [-a-zA-Z0-9_.]+\(\d\) 0:green
 }
 
 hook global WinSetOption filetype=man %{
     hook -group man-hooks window WinResize .* %{
-        _man %opt{_manpage}
+        man-impl %opt{_manpage}
     }
 }
 
-hook -group man-highlight global WinSetOption filetype=(?!man).* %{ rmhl man-highlight }
+hook -group man-highlight global WinSetOption filetype=(?!man).* %{ remove-highlighter man-highlight }
 
 hook global WinSetOption filetype=(?!man).* %{
-    rmhooks window man-hooks
+    remove-hooks window man-hooks
 }
 
-def -hidden -params 1..2 _man %{ %sh{
+def -hidden -params 1..2 man-impl %{ %sh{
     manout=$(mktemp /tmp/kak-man-XXXXXX)
     colout=$(mktemp /tmp/kak-man-XXXXXX)
     MANWIDTH=${kak_window_width} man "$@" > $manout
@@ -71,5 +71,5 @@ The page can be a word, or a word directly followed by a section number between 
         subject=${subject%%\(*}
     fi
 
-    printf %s\\n "eval -collapse-jumps -try-client %opt{docsclient} _man $pagenum $subject"
+    printf %s\\n "eval -collapse-jumps -try-client %opt{docsclient} man-impl $pagenum $subject"
 } }

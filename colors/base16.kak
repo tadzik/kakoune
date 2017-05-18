@@ -20,10 +20,12 @@
     echo "
         face value ${orange_dark}+b
         face type ${orange_light}
-        face identifier ${magenta_dark}
+        face variable ${magenta_dark}
+        face module ${green_dark}
+        face function ${cyan_light}
         face string ${green_dark}
         face keyword ${purple_dark}+b
-        face operator ${grey_light}
+        face operator ${cyan_light}
         face attribute ${orange_dark}
         face comment ${grey_dark}
         face meta ${orange_light}

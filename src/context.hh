@@ -3,7 +3,6 @@
 
 #include "selection.hh"
 #include "optional.hh"
-#include "flags.hh"
 
 namespace Kakoune
 {
@@ -86,6 +85,7 @@ public:
         None = 0,
         Transient = 1,
     };
+    friend constexpr bool with_bit_ops(Meta::Type<Flags>) { return true; }
 
     Context(InputHandler& input_handler, SelectionList selections,
             Flags flags, String name = "");
@@ -182,9 +182,6 @@ private:
     NestedBool m_keymaps_disabled;
     NestedBool m_history_disabled;
 };
-
-template<>
-struct WithBitOps<Context::Flags> : std::true_type {};
 
 struct ScopedEdition
 {

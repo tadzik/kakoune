@@ -48,9 +48,9 @@ Face FaceRegistry::operator[](const String& facedesc)
     auto it = m_aliases.find(facedesc);
     while (it != m_aliases.end())
     {
-        if (it->second.alias.empty())
-            return it->second.face;
-        it = m_aliases.find(it->second.alias);
+        if (it->value.alias.empty())
+            return it->value.face;
+        it = m_aliases.find(it->value.alias);
     }
     return parse_face(facedesc);
 }
@@ -75,11 +75,11 @@ void FaceRegistry::register_alias(const String& name, const String& facedesc,
     {
         while (it != m_aliases.end())
         {
-            if (it->second.alias.empty())
+            if (it->value.alias.empty())
                 break;
-            if (it->second.alias == name)
+            if (it->value.alias == name)
                 throw runtime_error("face cycle detected");
-            it = m_aliases.find(it->second.alias);
+            it = m_aliases.find(it->value.alias);
         }
 
         alias.alias = facedesc;
@@ -95,7 +95,7 @@ CandidateList FaceRegistry::complete_alias_name(StringView prefix,
                                                 ByteCount cursor_pos) const
 {
     return complete(prefix, cursor_pos,
-                    m_aliases | transform(std::mem_fn(&AliasMap::value_type::first)));
+                    m_aliases | transform(std::mem_fn(&AliasMap::Item::key)));
 }
 
 FaceRegistry::FaceRegistry()
@@ -107,6 +107,7 @@ FaceRegistry::FaceRegistry()
         { "SecondaryCursor", Face{ Color::Black, Color::White } },
         { "LineNumbers", Face{ Color::Default, Color::Default } },
         { "LineNumberCursor", Face{ Color::Default, Color::Default, Attribute::Reverse } },
+        { "LineNumbersWrapped", Face{ Color::Default, Color::Default, Attribute::Italic } },
         { "MenuForeground", Face{ Color::White, Color::Blue } },
         { "MenuBackground", Face{ Color::Blue, Color::White } },
         { "MenuInfo", Face{ Color::Cyan, Color::Default } },

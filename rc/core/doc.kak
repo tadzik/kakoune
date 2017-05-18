@@ -1,15 +1,14 @@
 decl str docsclient
 
-def -hidden -params 1..2 _doc-open %{
+def -hidden -params 1..2 doc-open %{
     %sh{
         manout=$(mktemp /tmp/kak-man-XXXXXX)
 
         # Those options are handled by the `man-db` implementation
-        export MAN_KEEP_FORMATTING=y
         export MANWIDTH=${kak_window_width}
 
         if man "$1" > "${manout}"; then
-            sed -ie $(printf 's/.\x8//g') "${manout}"
+            sed -i "" -e $(printf 's/.\x8//g') -e 's,\x1B\[[0-9;]*[a-zA-Z],,g' "${manout}"
 
             printf %s\\n "
                 edit! -scratch '*doc*'
@@ -46,7 +45,7 @@ An optional keyword argument can be passed to the function, which will be automa
             exit
         fi
 
-        printf %s\\n "eval -try-client %opt{docsclient} _doc-open ${PATH_DOC} $@"
+        printf %s\\n "eval -try-client %opt{docsclient} doc-open ${PATH_DOC} $@"
     }
 }
 

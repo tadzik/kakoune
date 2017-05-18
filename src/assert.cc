@@ -10,7 +10,7 @@
 
 #include <sys/types.h>
 #include <unistd.h>
-#include <stdlib.h>
+#include <cstdlib>
 
 namespace Kakoune
 {
@@ -28,21 +28,12 @@ private:
 bool notify_fatal_error(StringView msg)
 {
 #if defined(__CYGWIN__)
-    int res = MessageBox(NULL, msg.zstr(), "Kakoune: fatal error",
-                         MB_OKCANCEL | MB_ICONERROR);
-    switch (res)
-    {
-    case IDCANCEL:
-        return false;
-    case IDOK:
-        return true;
-    }
+    return MessageBox(NULL, msg.zstr(), "Kakoune: fatal error",
+                      MB_OKCANCEL | MB_ICONERROR) == IDOK;
 #elif defined(__linux__)
     auto cmd = format("xmessage -buttons 'quit:0,ignore:1' '{}'", msg);
-    if (system(cmd.c_str()) == 1)
-        return true;
+    return system(cmd.c_str()) == 1;
 #endif
-    return false;
 }
 
 void on_assert_failed(const char* message)

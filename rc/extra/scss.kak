@@ -13,33 +13,36 @@ hook global BufCreate .*[.](scss) %{
 # Highlighters
 # ‾‾‾‾‾‾‾‾‾‾‾‾
 
-addhl -group / group scss
+add-highlighter -group / regions -default core scss \
+    comment // $ ''
 
-addhl -group /scss ref css
+add-highlighter -group /scss/comment fill comment
 
-addhl -group /scss regex @[A-Za-z][A-Za-z0-9_-]* 0:meta
+add-highlighter -group /scss/core ref css
+
+add-highlighter -group /scss/core regex @[A-Za-z][A-Za-z0-9_-]* 0:meta
 
 # Commands
 # ‾‾‾‾‾‾‾‾
 
-def -hidden _scss_filter_around_selections      _css_filter_around_selections
-def -hidden _scss_indent_on_new_line            _css_indent_on_new_line
-def -hidden _scss_indent_on_closing_curly_brace _css_indent_on_closing_curly_brace
+def -hidden scss-filter-around-selections      css-filter-around-selections
+def -hidden scss-indent-on-new-line            css-indent-on-new-line
+def -hidden scss-indent-on-closing-curly-brace css-indent-on-closing-curly-brace
 
 # Initialization
 # ‾‾‾‾‾‾‾‾‾‾‾‾‾‾
 
-hook -group scss-highlight global WinSetOption filetype=scss %{ addhl ref scss }
+hook -group scss-highlight global WinSetOption filetype=scss %{ add-highlighter ref scss }
 
 hook global WinSetOption filetype=scss %[
-    hook window InsertEnd  .* -group scss-hooks  _scss_filter_around_selections
-    hook window InsertChar \n -group scss-indent _scss_indent_on_new_line
-    hook window InsertChar \} -group scss-indent _scss_indent_on_closing_curly_brace
+    hook window InsertEnd  .* -group scss-hooks  scss-filter-around-selections
+    hook window InsertChar \n -group scss-indent scss-indent-on-new-line
+    hook window InsertChar \} -group scss-indent scss-indent-on-closing-curly-brace
 ]
 
-hook -group scss-highlight global WinSetOption filetype=(?!scss).* %{ rmhl scss }
+hook -group scss-highlight global WinSetOption filetype=(?!scss).* %{ remove-highlighter scss }
 
 hook global WinSetOption filetype=(?!scss).* %{
-    rmhooks window scss-indent
-    rmhooks window scss-hooks
+    remove-hooks window scss-indent
+    remove-hooks window scss-hooks
 }

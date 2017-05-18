@@ -3,14 +3,13 @@
 
 #include "coord.hh"
 #include "completion.hh"
-#include "flags.hh"
 #include "array_view.hh"
 #include "shell_manager.hh"
 #include "parameters_parser.hh"
 #include "string.hh"
 #include "optional.hh"
 #include "utils.hh"
-#include "unordered_map.hh"
+#include "hash_map.hh"
 
 #include <functional>
 #include <initializer_list>
@@ -36,8 +35,7 @@ enum class CommandFlags
     None   = 0,
     Hidden = 1,
 };
-
-template<> struct WithBitOps<CommandFlags> : std::true_type {};
+constexpr bool with_bit_ops(Meta::Type<CommandFlags>) { return true; }
 
 struct CommandInfo { String name, info; };
 
@@ -95,7 +93,7 @@ public:
     Optional<CommandInfo> command_info(const Context& context,
                                        StringView command_line) const;
 
-    bool command_defined(const String& command_name) const;
+    bool command_defined(StringView command_name) const;
 
     void register_command(String command_name, Command command,
                           String docstring,
@@ -112,7 +110,7 @@ private:
     void execute_single_command(CommandParameters params,
                                 Context& context,
                                 const ShellContext& shell_context,
-                                DisplayCoord pos) const;
+                                DisplayCoord pos);
 
     struct CommandDescriptor
     {
@@ -123,12 +121,13 @@ private:
         CommandHelper helper;
         CommandCompleter completer;
     };
-    using CommandMap = UnorderedMap<String, CommandDescriptor, MemoryDomain::Commands>;
+    using CommandMap = HashMap<String, CommandDescriptor, MemoryDomain::Commands>;
     CommandMap m_commands;
     String m_last_complete_command;
+    int m_command_depth = 0;
 
     CommandMap::const_iterator find_command(const Context& context,
-                                            const String& name) const;
+                                            StringView name) const;
 };
 
 String expand(StringView str, const Context& context,
@@ -136,7 +135,7 @@ String expand(StringView str, const Context& context,
 
 String expand(StringView str, const Context& context,
               const ShellContext& shell_context,
-              std::function<String (String)> postprocess);
+              const std::function<String (String)>& postprocess);
 
 }
 

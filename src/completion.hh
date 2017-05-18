@@ -4,7 +4,6 @@
 #include <functional>
 #include <algorithm>
 
-#include "flags.hh"
 #include "units.hh"
 #include "string.hh"
 #include "vector.hh"
@@ -30,7 +29,7 @@ struct Completions
         : start(start), end(end) {}
 
     Completions(ByteCount start, ByteCount end, CandidateList candidates)
-        : start(start), end(end), candidates(std::move(candidates)) {}
+        : candidates(std::move(candidates)), start(start), end(end) {}
 };
 
 enum class CompletionFlags
@@ -40,12 +39,12 @@ enum class CompletionFlags
     Start = 1 << 2,
 };
 
-template<> struct WithBitOps<CompletionFlags> : std::true_type {};
+constexpr bool with_bit_ops(Meta::Type<CompletionFlags>) { return true; }
 
 using Completer = std::function<Completions (const Context&, CompletionFlags,
                                              StringView, ByteCount)>;
 
-inline Completions complete_nothing(const Context& context, CompletionFlags,
+inline Completions complete_nothing(const Context&, CompletionFlags,
                                     StringView, ByteCount cursor_pos)
 {
     return {cursor_pos, cursor_pos};

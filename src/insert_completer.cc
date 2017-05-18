@@ -14,6 +14,7 @@
 #include "user_interface.hh"
 
 #include <numeric>
+#include <utility>
 
 namespace Kakoune
 {
@@ -89,32 +90,31 @@ InsertCompletion complete_word(const SelectionList& sels, const OptionManager& o
         return {};
 
     BufferCoord word_begin;
-    String prefix;
-    IdMap<int> sel_word_counts;
+    StringView prefix;
+    HashMap<StringView, int> sel_word_counts;
     for (int i = 0; i < sels.size(); ++i)
     {
         Utf8It end{buffer.iterator_at(sels[i].cursor()), buffer};
         Utf8It begin = end-1;
-        if (not skip_while_reverse(begin, buffer.begin(),
-                                   [&](Codepoint c) { return is_word_pred(c); }))
+        if (not skip_while_reverse(begin, buffer.begin(), is_word_pred))
             ++begin;
 
         if (i == sels.main_index())
         {
             word_begin = begin.base().coord();
-            prefix = buffer.string(word_begin, end.base().coord());
+            prefix = buffer.substr(word_begin, end.base().coord());
         }
 
-        skip_while(end, buffer.end(), [&](Codepoint c) { return is_word_pred(c); });
+        skip_while(end, buffer.end(), is_word_pred);
 
-        auto word = buffer.string(begin.base().coord(), end.base().coord());
+        StringView word = buffer.substr(begin.base().coord(), end.base().coord());
         ++sel_word_counts[word];
     }
 
     struct RankedMatchAndBuffer : RankedMatch
     {
-        RankedMatchAndBuffer(const RankedMatch& m, const Buffer* b)
-            : RankedMatch{m}, buffer{b} {}
+        RankedMatchAndBuffer(RankedMatch  m, const Buffer* b)
+            : RankedMatch{std::move(m)}, buffer{b} {}
 
         using RankedMatch::operator==;
         using RankedMatch::operator<;
@@ -137,7 +137,7 @@ InsertCompletion complete_word(const SelectionList& sels, const OptionManager& o
     for (auto& word_count : sel_word_counts)
     {
         if (get_word_db(buffer).get_word_occurences(word_count.key) <= word_count.value)
-            unordered_erase(matches, StringView{word_count.key});
+            unordered_erase(matches, word_count.key);
     }
 
     if (other_buffers)
@@ -155,7 +155,7 @@ InsertCompletion complete_word(const SelectionList& sels, const OptionManager& o
         if (RankedMatch match{word, prefix})
             matches.emplace_back(match, nullptr);
 
-    unordered_erase(matches, StringView{prefix});
+    unordered_erase(matches, prefix);
     std::sort(matches.begin(), matches.end());
     matches.erase(std::unique(matches.begin(), matches.end()), matches.end());
 
@@ -181,7 +181,7 @@ InsertCompletion complete_word(const SelectionList& sels, const OptionManager& o
         candidates.push_back({m.candidate().str(), "", std::move(menu_entry)});
     }
 
-    return { word_begin, cursor_pos, std::move(candidates), buffer.timestamp() };
+    return { std::move(candidates), word_begin, cursor_pos, buffer.timestamp() };
 }
 
 template<bool require_slash>
@@ -205,7 +205,7 @@ InsertCompletion complete_filename(const SelectionList& sels,
     if (begin == pos)
         return {};
 
-    auto prefix = buffer.string(begin.coord(), pos.coord());
+    StringView prefix = buffer.substr(begin.coord(), pos.coord());
     if (require_slash and not contains(prefix, '/'))
         return {};
 
@@ -235,7 +235,7 @@ InsertCompletion complete_filename(const SelectionList& sels,
     }
     if (candidates.empty())
         return {};
-    return { begin.coord(), pos.coord(), std::move(candidates), buffer.timestamp() };
+    return { std::move(candidates), begin.coord(), pos.coord(), buffer.timestamp() };
 }
 
 InsertCompletion complete_option(const SelectionList& sels,
@@ -272,8 +272,7 @@ InsertCompletion complete_option(const SelectionList& sels,
 
         if (cursor_pos.line == coord.line and cursor_pos.column >= coord.column)
         {
-            StringView query = buffer[coord.line].substr(
-                coord.column, cursor_pos.column - coord.column);
+            StringView query = buffer.substr(coord, cursor_pos);
 
             const ColumnCount tabstop = options["tabstop"].get<int>();
             const ColumnCount column = get_column(buffer, tabstop, cursor_pos);
@@ -310,7 +309,7 @@ InsertCompletion complete_option(const SelectionList& sels,
                 candidates.push_back({ match.candidate().str(), match.docstring.str(),
                                        std::move(match.menu_entry) });
 
-            return { coord, end, std::move(candidates), timestamp };
+            return { std::move(candidates), coord, end, timestamp };
         }
     }
     return {};
@@ -342,7 +341,7 @@ InsertCompletion complete_line(const SelectionList& sels, const OptionManager& o
         return {};
     std::sort(candidates.begin(), candidates.end());
     candidates.erase(std::unique(candidates.begin(), candidates.end()), candidates.end());
-    return { cursor_pos.line, cursor_pos, std::move(candidates), buffer.timestamp() };
+    return { std::move(candidates), cursor_pos.line, cursor_pos, buffer.timestamp() };
 }
 
 }
@@ -400,11 +399,11 @@ void InsertCompleter::select(int offset, Vector<Key>& keystrokes)
     }
 
     for (auto i = 0_byte; i < prefix_len; ++i)
-        keystrokes.push_back(Key::Backspace);
+        keystrokes.emplace_back(Key::Backspace);
     for (auto i = 0_byte; i < suffix_len; ++i)
-        keystrokes.push_back(Key::Delete);
+        keystrokes.emplace_back(Key::Delete);
     for (auto& c : candidate.completion)
-        keystrokes.push_back(c);
+        keystrokes.emplace_back(c);
 }
 
 void InsertCompleter::update()
@@ -418,9 +417,9 @@ void InsertCompleter::update()
 
 void InsertCompleter::reset()
 {
-    m_explicit_completer = nullptr;
-    if (m_completions.is_valid())
+    if (m_explicit_completer or m_completions.is_valid())
     {
+        m_explicit_completer = nullptr;
         m_completions = InsertCompletion{};
         if (m_context.has_client())
         {
@@ -515,7 +514,7 @@ bool InsertCompleter::try_complete(Func complete_func)
     kak_assert(m_completions.begin <= sels.main().cursor());
     m_current_candidate = m_completions.candidates.size();
     menu_show();
-    m_completions.candidates.push_back({sels.buffer().string(m_completions.begin, m_completions.end), ""});
+    m_completions.candidates.push_back({sels.buffer().string(m_completions.begin, m_completions.end), "", {}});
     return true;
 }
 

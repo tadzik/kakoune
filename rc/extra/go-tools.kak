@@ -44,7 +44,7 @@ def go-enable-autocomplete -docstring "Add gocode completion candidates to the c
 
 def go-disable-autocomplete -docstring "Disable gocode completion" %{
     set window completers %sh{ printf %s\\n "'${kak_opt_completers}'" | sed 's/option=gocode_completions://g' }
-    rmhooks window go-autocomplete
+    remove-hooks window go-autocomplete
     unalias window complete go-complete
 }
 
@@ -85,7 +85,7 @@ def -params ..1 go-format \
 decl -hidden str go_doc_tmp_dir
 
 # FIXME text escaping
-def -hidden -params 1..2 _gogetdoc-cmd %{
+def -hidden -params 1..2 gogetdoc-cmd %{
    %sh{
         dir=$(mktemp -d -t kak-go.XXXXXXXX)
         printf %s\\n "set buffer go_doc_tmp_dir ${dir}"
@@ -153,15 +153,15 @@ def -hidden -params 1..2 _gogetdoc-cmd %{
 }
 
 def go-doc-info -docstring "Show the documention of the symbol under the cursor" %{
-    _gogetdoc-cmd "info"
+    gogetdoc-cmd "info"
 }
 
 def go-print-signature -docstring "Print the signature of the symbol under the cursor" %{
-    _gogetdoc-cmd "echo"
+    gogetdoc-cmd "echo"
 }
 
 def go-jump -docstring "Jump to the symbol definition" %{
-    _gogetdoc-cmd "jump" 1
+    gogetdoc-cmd "jump" 1
 }
 
 def go-share-selection -docstring "Share the selection using the Go Playground" %{ %sh{
